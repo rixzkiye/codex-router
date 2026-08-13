@@ -9,6 +9,7 @@ The core invariant is: logical agent identity is durable, execution context is r
 
 ## Product specifications
 
+- [Unified Platform PRD](PLATFORM_PRD.md) defines the complete target product across durable agents, multi-provider inference, authentication, model catalogs, operations, and the expanded Web Console.
 - [Core Router PRD](PRD.md) defines lifecycle, durability, routing, recovery, authority, and evidence semantics.
 - [Web Console PRD](WEB_UI_PRD.md) defines the complete operator UI, browser transport, interaction model, aesthetic system, accessibility, and release gates.
 
