@@ -5,7 +5,7 @@
 | Field | Value |
 | --- | --- |
 | Status | Implementation-ready draft |
-| Version | 0.1 |
+| Version | 0.2 |
 | Date | 2026-08-13 |
 | Product | Codex Router Console |
 | Parent product | Codex Router |
@@ -33,7 +33,7 @@ Every lifecycle capability exposed by the router must have a safe and comprehens
 - Inspect runtime health, quota, capacity, routing, worktree leases, and fencing.
 - Read versioned results with worker claims separated from observed evidence.
 - Diagnose recovery, disconnection, duplicate suppression, and event lag.
-- Configure runtimes and router policy without revealing or accepting raw secrets.
+- Configure runtime model policy, credential references, Codex authentication, and router policy without revealing or accepting raw secrets.
 
 The central UX invariant is:
 
@@ -67,6 +67,9 @@ The MCP interface is optimized for machine orchestration. It is intentionally co
 - Is a runtime limited, degraded, draining, or truly offline?
 - Can an agent safely continue, or does it require explicit handoff?
 - Which configuration or operator action changed the system?
+- Which models are actually available for this runtime and authentication boundary?
+- Is this runtime signed in with ChatGPT, an API key, an enterprise access token, an external provider reference, or no credential?
+- Will a model-default, credential, login, or logout change affect active work?
 
 A generic admin template would create new failure modes:
 
@@ -118,11 +121,12 @@ It must have its own identity and must not imitate a specific commercial product
 9. Ship a cohesive visual and motion system with excellent defaults.
 10. Meet WCAG 2.2 AA and remain usable with keyboard, screen reader, zoom, reduced motion, high contrast, and coarse pointer input.
 11. Keep secrets, raw credentials, and hidden model reasoning out of the browser.
-12. Provide deterministic acceptance tests for behavior, visuals, accessibility, performance, security, and recovery.
+12. Make runtime-authoritative model policy and isolated Codex authentication fully operable without exposing credential material.
+13. Provide deterministic acceptance tests for behavior, visuals, accessibility, performance, security, and recovery.
 
 ### 5.2 Success definition
 
-The Console succeeds when an authorized operator can start, observe, intervene in, recover, and verify every router-managed task without using the MCP interface directly and without losing any safety or evidence semantics.
+The Console succeeds when an authorized operator can configure model policy and runtime authentication, then start, observe, intervene in, recover, and verify every router-managed task without using the MCP interface directly and without losing any safety, identity, or evidence semantics.
 
 ### 5.3 Release-level success metrics
 
@@ -132,6 +136,8 @@ The Console succeeds when an authorized operator can start, observe, intervene i
 - 0 cases where accepted cancellation is presented as confirmed interruption.
 - 0 cases where worker-reported tests are styled as observed tests.
 - 0 credential or configured secret value reaches browser payloads, client logs, analytics, screenshots, or error telemetry.
+- 100% of supported model-policy and authentication lifecycle states have a tested UI path and authoritative readback.
+- 0 login, logout, catalog, or credential-reference operations cross a runtime credential boundary.
 - 100% of critical workflows pass keyboard-only and screen-reader acceptance.
 - 0 serious or critical automated accessibility violations on required routes.
 - p95 durable-state-to-visible-state latency below 750 ms on a healthy local connection.
@@ -190,6 +196,8 @@ The person responsible for router configuration and runtime registration.
 Primary jobs:
 
 - Add, edit, enable, disable, drain, and reconnect runtime profiles.
+- Inspect runtime-reported model catalogs and configure allowed/default model and reasoning policy.
+- Start, recover, and end runtime-scoped Codex authentication without handling credential values.
 - Configure allowed worktree roots and router policies.
 - Validate and apply configuration changes atomically.
 - Confirm that secret references resolve without seeing their values.
@@ -203,6 +211,9 @@ Primary jobs:
 | Start, steer, continue, cancel, handoff | No | Yes | Yes |
 | Resolve pending interaction | No | Yes, within task authority | Yes, within task authority |
 | Export redacted audit summary | Yes | Yes | Yes |
+| Read redacted model/auth status | Yes | Yes | Yes |
+| Refresh catalogs or change model policy | No | No | Yes |
+| Start/cancel login, change credential reference, or log out | No | No | Yes |
 | Change runtime or router configuration | No | No | Yes |
 | View raw debug payloads | No | No | Yes, redacted and audited |
 
@@ -315,12 +326,17 @@ Results are versioned and show one of `completed`, `failed`, `interrupted`, or `
 ├── attention
 ├── runtimes
 │   └── :runtimeId
+│       ├── overview
+│       ├── models
+│       └── authentication
 ├── worktrees
 │   └── :worktreeKey
 ├── events
 │   └── :eventId
 └── settings
     ├── runtimes
+    ├── models
+    ├── credentials
     ├── worktrees
     ├── policies
     ├── retention
@@ -605,6 +621,8 @@ User-input behavior:
 The runtime fleet screen shows:
 
 - Runtime ID, adapter, provider, and allowed models.
+- Effective default model/reasoning effort plus catalog freshness.
+- Redacted authentication method/status and policy restriction state.
 - Capability tiers and policy tags.
 - Enabled state.
 - Health state and initialization state.
@@ -629,11 +647,123 @@ Administrator actions:
 - Enter or leave drain mode.
 - Reconnect/reinitialize runtime.
 - Validate configuration and compatibility.
+- Open runtime-scoped model and authentication administration.
 - Inspect redacted connection errors.
 
 Every mutation requires server authorization, idempotency, audit logging, and readback.
 
-### 12.9 Worktrees and writer leases
+### 12.9 Models, credentials, and Codex authentication
+
+Model and credential administration are first-class runtime capabilities. The runtime detail pages show the effective state for one isolated credential boundary; **Settings → Models** and **Settings → Credentials** provide fleet-wide comparison and policy editing. These surfaces manage policy, references, and authentication lifecycle—not secret values.
+
+#### 12.9.1 Model catalog and defaults
+
+The model catalog reported by the runtime or provider is authoritative. The Console must not ship a hard-coded OpenAI model list as product truth because availability can differ by authentication method, workspace, provider, policy, Codex version, and retirement schedule.
+
+Each runtime model view shows, when supplied by its adapter:
+
+- Stable model ID, display name, provider, description, and input capabilities.
+- Supported reasoning-effort values and runtime-recommended default effort.
+- Whether the model is available for the current credential boundary.
+- Whether runtime policy allows the model.
+- Default, hidden, deprecated, retiring, or recommended-upgrade metadata.
+- Catalog freshness, source, last successful refresh, and any redacted refresh error.
+
+Administrator configuration supports:
+
+- Allowed-model set per runtime.
+- Default model and supported default reasoning effort per runtime/profile.
+- Capability-tier-to-preferred-model mappings.
+- Optional ordered alternatives for unconstrained new routing decisions.
+- Explicit catalog refresh and compatibility validation.
+
+Model rules:
+
+- The effective selectable set is `available ∩ allowed ∩ policy-eligible`.
+- The default model must belong to that effective set; an unavailable, unknown, hidden, or forbidden model cannot be newly selected.
+- A reasoning effort must be one advertised for the selected model. Unknown values fail validation rather than being coerced.
+- An exact model request fails closed when unavailable. Alternatives may be considered only for a new request that permits policy-based routing, and the selected alternative and reason must be recorded before execution.
+- No active turn, stored agent, continuation, or handoff silently changes model because a default or catalog changed. Existing agents retain their recorded model unless an authorized operator explicitly selects a supported override at a safe turn boundary.
+- Deprecation or upgrade metadata renders a warning and migration action; it never rewrites defaults, scheduled work, or active history automatically.
+- Refreshing a catalog is idempotent, audited, and read back. Refresh failure preserves the last known catalog as visibly stale rather than fabricating availability.
+
+#### 12.9.2 Credential and account status
+
+Every runtime remains one isolated credential boundary with its own dedicated `CODEX_HOME` or equivalent provider isolation. Signing one runtime in or out must not mutate another runtime's credentials.
+
+The browser-facing credential projection may contain only:
+
+- Authentication type: `chatgpt`, `api_key`, `access_token`, `provider_reference`, `local_no_auth`, or `unknown`.
+- Status: `signed_out`, `login_pending`, `authenticated`, `expired`, `restricted`, `error`, or `unknown`.
+- A Codex-supplied, redacted account/workspace label when safe and available.
+- Last status check, last successful authentication, and operation ID.
+- Configured storage mode as metadata: `file`, `keyring`, `auto`, or `unknown`.
+- Forced login method or workspace restriction as policy metadata, with workspace identity redacted according to policy.
+- Symbolic credential/environment reference and resolution state when the actor may view configuration.
+
+The projection must never contain:
+
+- API keys, access tokens, refresh tokens, OAuth callback payloads, or resolved environment values.
+- `auth.json` contents, downloads, uploads, filesystem paths, keyring records, or credential-store lookup keys.
+- Credential fragments or fingerprints unless the upstream runtime explicitly provides a documented safe identifier.
+- Raw provider/authentication errors before server-side allowlisting and redaction.
+
+Credential rotation happens in the external environment or secret manager. The Console updates or validates only the symbolic reference, then offers **Recheck authentication** or **Reconnect runtime**. It never offers a general secret text field.
+
+#### 12.9.3 Sign in with ChatGPT
+
+ChatGPT login is a durable, server-mediated operation scoped to exactly one runtime:
+
+1. An administrator selects **Sign in with ChatGPT** and confirms the target runtime.
+2. The gateway creates an idempotent auth operation and starts the supported Codex/App Server login flow inside that runtime's isolated `CODEX_HOME`.
+3. The Console receives only an ephemeral official authorization URL and operation state, then opens that URL through an explicit user action in a new browser context.
+4. The authentication callback returns to the Codex login process, not to the Console gateway.
+5. The operation emits `pending`, `waiting_for_browser`, `authenticated`, `failed`, `cancelled`, or `timed_out` events.
+6. On apparent success, the server performs an independent account/login-status readback before rendering `authenticated`.
+
+The authorization URL is `no-store` and excluded from Console route history, persistence, logs, analytics, referrers, and crash reports. Refreshing or reconnecting the Console recovers the durable operation state without launching a second login process. A concurrent login request for the same runtime returns the existing operation or a conflict; it never races two credential writers.
+
+#### 12.9.4 Headless device-code login
+
+When the installed Codex runtime advertises device authentication, the same screen offers **Sign in with device code**:
+
+- The server starts the supported device flow for the target runtime.
+- The UI shows the official verification URL, one-time user code, expiration, and status.
+- Copying the code is an explicit action; the value is ephemeral and never persisted, logged, analyzed, or included in exports.
+- Expired codes cannot be reused. Retry creates a new operation and code.
+- Cancel or timeout terminates the owned login process and readbacks the final authentication state.
+
+The Console must not provide “copy `auth.json` from another machine” as a login workflow.
+
+#### 12.9.5 API key, access token, and custom-provider login
+
+API-key and enterprise access-token authentication use server-side secret references:
+
+1. The administrator selects or enters a permitted symbolic reference such as `env:OPENAI_API_KEY` or `env:CODEX_ACCESS_TOKEN`.
+2. Validation reports only `resolved`, `unresolved`, or `not checked`.
+3. The server resolves the value outside the browser and passes it to the supported Codex login operation through stdin or an equivalent non-argument secret channel.
+4. The server clears temporary process input, performs status readback, and returns only the redacted credential projection.
+
+Custom providers use their configured `env_key`, `requires_openai_auth`, or local/no-auth contract. The UI presents only methods supported by the selected adapter and installed runtime. Provider-specific raw secret forms, command arguments, and environment values remain server-only.
+
+#### 12.9.6 Logout and authentication recovery
+
+Logout is an administrator-only, idempotent operation scoped to one runtime. Before submission, the dialog shows active/queued agents, likely interruption or recovery consequences, and whether the runtime will become ineligible. Active work requires explicit consequence confirmation.
+
+The server invokes the supported runtime logout operation, waits for terminal operation state, and performs status readback. The Console renders signed out only after that readback. A browser cannot delete credential files or keyring values through filesystem APIs.
+
+An authentication failure maps affected work to an explicit attention or recovery state. The router must not silently re-authenticate with a different credential, move a context-bearing continuation to another credential boundary, or downgrade an exact model request. Forced login-method/workspace restrictions are visible, enforced server-side, and represented as `restricted` rather than a generic offline state.
+
+#### 12.9.7 Presentation and permissions
+
+- Reviewer and operator roles may inspect redacted model availability and auth health when allowed, but only administrators may refresh catalogs, change model policy, start/cancel login, change credential references, or log out.
+- Model, credential, and login controls use plain operational language; no provider logo becomes the sole status indicator.
+- Authentication progress uses restrained status transitions, not an indefinite decorative spinner.
+- External authorization links visibly identify their destination and remain keyboard accessible.
+- Destructive logout, model retirement, restricted-account, and stale-catalog states remain distinguishable without color.
+- Every mutation requires stable idempotency, expected runtime/configuration versions, audit logging, terminal operation state, and independent readback.
+
+### 12.10 Worktrees and writer leases
 
 The worktree screen shows:
 
@@ -652,7 +782,7 @@ Requirements:
 - A lease warning never offers a client-only “force unlock.” Recovery must use a server command that verifies and audits ownership.
 - A path is copied only through an explicit action; it is not sent to analytics.
 
-### 12.10 Event journal and audit
+### 12.11 Event journal and audit
 
 The event view is an operator audit tool, not a raw log firehose.
 
@@ -667,13 +797,15 @@ Capabilities:
 
 Default retention and truncation are visible. The UI must disclose when older events or output have expired.
 
-### 12.11 Settings and configuration
+### 12.12 Settings and configuration
 
 Configuration management is part of the complete Console, not a hidden file-editing prerequisite.
 
 Required sections:
 
 - Runtime profiles.
+- Runtime-authoritative model catalogs, defaults, reasoning effort, and capability-tier mappings.
+- Credential references, storage-mode metadata, authentication status, login/logout operations, and forced authentication policy.
 - Allowed worktree roots.
 - Wait, lease, idempotency, and retention policy.
 - Default routing and recovery policy.
@@ -692,7 +824,7 @@ Security requirements:
 - Failed apply preserves the last valid configuration and provides a rollback result.
 - Changes requiring runtime reconnect clearly identify affected runtimes before apply.
 
-### 12.12 Diagnostics
+### 12.13 Diagnostics
 
 Diagnostics expose:
 
@@ -708,7 +840,7 @@ Diagnostics expose:
 
 Diagnostics must not include credentials, environment values, secret paths, raw prompts, or hidden reasoning.
 
-### 12.13 First-run and compatibility states
+### 12.14 First-run and compatibility states
 
 The first run is a real product state, not a broken empty dashboard.
 
@@ -717,6 +849,9 @@ The first run is a real product state, not a broken empty dashboard.
 - If the Web Console and gateway schema versions are incompatible, the shell blocks mutations, keeps safe reads when possible, and identifies the required upgrade side.
 - If the router protocol adapter is incompatible with an installed runtime, only that runtime is marked incompatible; the rest of the Console remains usable.
 - Onboarding never asks for raw credentials. It asks for secret references and shows only resolution status.
+- If a runtime requires ChatGPT authentication, onboarding starts the server-mediated browser or device flow and never handles the resulting tokens.
+- If credentials are valid but policy-restricted, onboarding explains the allowed login method/workspace without exposing its raw identifier.
+- If the model catalog is unavailable, model selection remains disabled and no fallback catalog is invented.
 
 ## 13. Primary workflows
 
@@ -777,6 +912,36 @@ sequenceDiagram
 3. Server replays retained changes or reports a gap.
 4. On replay, the client deduplicates and applies ordered projections.
 5. On gap, the client fetches a new snapshot before re-enabling mutations.
+
+### 13.6 Authenticate a Codex runtime and select its defaults
+
+```mermaid
+sequenceDiagram
+    participant A as Administrator
+    participant C as Console
+    participant G as Gateway
+    participant X as Isolated Codex runtime
+    participant O as Official OpenAI sign-in
+    A->>C: Sign in with ChatGPT for runtime R
+    C->>G: Idempotent login request for R
+    G->>X: Start supported login flow in R's CODEX_HOME
+    X-->>G: Ephemeral authorization URL and pending state
+    G-->>C: Redacted durable operation plus one-time URL
+    C->>O: Open official URL by explicit user action
+    O-->>X: Return credentials to Codex login process
+    X-->>G: Authentication operation completed
+    G->>X: Read back account status and model catalog
+    X-->>G: Redacted account projection and available models
+    G-->>C: Authenticated state and selectable catalog
+    A->>C: Save allowed model, default, and reasoning effort
+    C->>G: Validate then apply with expected versions
+    G->>X: Validate effective runtime compatibility
+    G-->>C: Audited readback
+```
+
+The device-code variant replaces the external browser callback with an expiring verification URL and user code. The API-key or access-token variant replaces the browser step with server-side secret-reference resolution and stdin injection. In every variant, the Console sees operation state and redacted identity only; it never receives the resulting credential.
+
+Authentication and model-policy changes apply to the named runtime only. A settings change affects new routing decisions after successful readback; active agents and context-bearing continuations keep their recorded execution identity unless an operator explicitly initiates a safe, authorized change.
 
 ## 14. Visual direction: Quiet Operations Desk
 
@@ -1117,6 +1282,10 @@ GET  /api/v1/agents/:agentId/evidence
 GET  /api/v1/interactions
 GET  /api/v1/runtimes
 GET  /api/v1/runtimes/:runtimeId
+GET  /api/v1/models
+GET  /api/v1/runtimes/:runtimeId/models
+GET  /api/v1/runtimes/:runtimeId/auth
+GET  /api/v1/runtimes/:runtimeId/auth/operations/:operationId
 GET  /api/v1/worktrees
 GET  /api/v1/events
 GET  /api/v1/diagnostics
@@ -1143,7 +1312,18 @@ POST /api/v1/runtimes/:runtimeId/enable
 POST /api/v1/runtimes/:runtimeId/disable
 POST /api/v1/runtimes/:runtimeId/drain
 POST /api/v1/runtimes/:runtimeId/reconnect
+POST /api/v1/runtimes/:runtimeId/models/refresh
+PUT  /api/v1/runtimes/:runtimeId/model-policy
+POST /api/v1/runtimes/:runtimeId/auth/recheck
+POST /api/v1/runtimes/:runtimeId/auth/login/chatgpt
+POST /api/v1/runtimes/:runtimeId/auth/login/device
+POST /api/v1/runtimes/:runtimeId/auth/login/api-key-reference
+POST /api/v1/runtimes/:runtimeId/auth/login/access-token-reference
+POST /api/v1/runtimes/:runtimeId/auth/logout
+POST /api/v1/runtimes/:runtimeId/auth/operations/:operationId/cancel
 ```
+
+Authentication endpoints accept runtime IDs, permitted symbolic secret references, and mutation metadata only. They reject raw secret-shaped values. Authorization URLs and device codes are ephemeral `Cache-Control: no-store` response fields on the exact login operation; they are excluded from general bootstrap, runtime, event, audit-export, and analytics DTOs.
 
 #### Realtime
 
@@ -1164,6 +1344,9 @@ type WebMutationMeta = {
   expectedIncarnationId?: string;
   expectedTurnId?: string;
   expectedResultVersion?: number;
+  expectedRuntimeVersion?: number;
+  expectedConfigVersion?: number;
+  expectedAuthOperationId?: string;
 };
 ```
 
@@ -1179,6 +1362,8 @@ Response rules:
 - `409` for stale turn/incarnation/result/configuration or invalid transition.
 - `429` for gateway-level request limiting, never for provider quota projection.
 - `503` for unavailable router service.
+
+Long-running runtime, catalog, login, and logout mutations return a durable operation resource. A page reload recovers that resource by operation ID; terminal UI state requires operation completion plus authoritative runtime readback. Cancelling an auth operation terminates only the server-owned process for that operation and does not imply logout.
 
 Errors use a stable envelope:
 
@@ -1216,6 +1401,9 @@ type WebError = {
 - No mutation is automatically retried after a semantic `409`, `403`, or non-retryable `5xx` response.
 - Background tabs may reduce rendering work but must resume from the last durable cursor.
 - Multiple tabs may share a stream when practical, but correctness must not depend on cross-tab coordination.
+- Model catalog and auth-operation caches are keyed by runtime credential boundary, never by provider name alone.
+- Changing a model default affects only new eligible routing decisions after configuration readback; it does not rewrite active or stored agent projections.
+- Authentication operation state survives page reload and stream reconnect. Ephemeral authorization URLs or device codes do not survive after use or expiration and must be reissued through an explicit retry.
 
 ## 22. Security and privacy
 
@@ -1252,6 +1440,11 @@ Remote deployments require a trusted identity provider or reverse-proxy identity
 
 - Raw credentials and resolved credential paths never enter browser DTOs.
 - Secret references may be shown only by symbolic name when policy permits.
+- Codex `auth.json`, OS keyring values, provider environment values, access/refresh tokens, and OAuth callback payloads are never read, uploaded, downloaded, rendered, copied, indexed, or exported by the Console.
+- Each Codex runtime has an independently configured `CODEX_HOME`; all login, status, model-catalog, and logout processes are scoped to that exact boundary.
+- API-key and access-token login accepts only an allowlisted secret-reference scheme. Resolution and stdin injection occur server-side without shell interpolation, command-line arguments, or environment-value echoing.
+- Ephemeral authorization URLs and device codes are returned only to the initiating authorized session with `Cache-Control: no-store`, then excluded from logs, events, audit payloads, analytics, crash reports, and persisted client state.
+- The ChatGPT OAuth callback terminates at the supported Codex login process. The gateway is not an OAuth credential callback or token-exchange endpoint.
 - Redaction occurs before persistence and again before browser serialization as defense in depth.
 - Client error reporting strips task text, user input, paths, commands, event payloads, and identifiers unless explicitly allowlisted.
 - Clipboard actions are always explicit.
@@ -1271,7 +1464,8 @@ The server records:
 - Authenticated actor/session and role.
 - Operation ID and idempotency key hash.
 - Command, target identity, request result, and durable registry version.
-- Configuration validation, apply, rollback, runtime lifecycle, and export actions.
+- Configuration validation, apply, rollback, runtime lifecycle, model-policy/catalog refresh, authentication lifecycle, and export actions.
+- Authentication audit fields include method, runtime, operation state, actor, timing, and a credential-reference identifier or hash when needed—never the referenced value, authorization URL, device code, or provider payload.
 
 Audit records are redacted and never include raw credentials.
 
@@ -1298,6 +1492,8 @@ Audit records are redacted and never include raw credentials.
 - Refreshing during a pending mutation recovers through idempotency and durable projection.
 - Browser crashes do not create duplicate commands.
 - Server restart shows reconnecting/stale state until reconciliation completes.
+- Login and logout operations have bounded deadlines, owned-process cleanup, and startup reconciliation so an orphaned process cannot remain indefinitely.
+- A runtime losing authentication or model eligibility becomes explicitly restricted/degraded and triggers routing reconciliation without silently moving context-bearing work.
 
 ## 24. Observability and product analytics
 
@@ -1312,6 +1508,7 @@ Required browser/gateway metrics:
 - Client render errors and route-boundary failures.
 - Long tasks, INP, LCP, CLS, and dropped-frame samples.
 - Attention age and resolution duration.
+- Model-catalog refresh age/failure and authentication operation state/duration by coarse method, without account labels, URLs, codes, or credential references.
 
 ### 24.2 Privacy-preserving analytics
 
@@ -1375,7 +1572,25 @@ Frontend errors and mutations include an operation ID that can be matched to gat
 - Secret configuration accepts references only.
 - No sensitive application data appears in URLs or analytics.
 
-### 25.6 Accessibility
+### 25.6 Model and credential administration
+
+- Model choices come from the selected runtime's current catalog; the UI never invents availability from a bundled list.
+- An unavailable, hidden, forbidden, or unknown model and an unsupported reasoning effort cannot be saved as a new default.
+- Exact model requests fail closed; policy alternatives are visible and recorded for unconstrained new work.
+- Catalog refresh or default changes do not silently modify active agents, stored history, continuations, or scheduled work.
+- Deprecated/retiring models show upstream guidance and require an explicit migration decision.
+- ChatGPT login survives browser refresh/reconnect through one durable operation without spawning a duplicate process.
+- Browser login, device code, API-key reference, access-token reference, status recheck, cancel, timeout, failure, and logout each reach a read-backed terminal state.
+- The browser never receives a token, resolved key, credential cache, keyring value, raw auth error, or `auth.json` content.
+- Authorization URLs and device codes appear only in the initiating no-store operation response and never in logs, analytics, event history, exports, or persisted browser state.
+- API-key and access-token reference tests prove the resolved value never crosses the browser boundary or appears in process arguments.
+- Logout affects exactly one runtime and cannot clear another runtime's credentials.
+- Logout with active or queued work requires consequence confirmation and creates explicit attention/recovery state when work is affected.
+- Forced login-method and workspace restrictions are visible and enforced; mismatches render `restricted` rather than authenticated or generically offline.
+- Credential storage mode is visible as `file`, `keyring`, `auto`, or `unknown` metadata without displaying paths or stored records.
+- Auth timeout/cancel terminates its owned process, expires device material, and cannot be confused with successful logout.
+
+### 25.7 Accessibility
 
 - All critical flows pass keyboard-only operation.
 - Required routes pass screen-reader smoke tests.
@@ -1384,7 +1599,7 @@ Frontend errors and mutations include an operation ID that can be matched to gat
 - Focus survives live updates, dialogs, drawers, routing, and virtualization.
 - The product remains functional at 200% zoom, 320 CSS px width, forced colors, and reduced motion.
 
-### 25.7 Visual and motion quality
+### 25.8 Visual and motion quality
 
 - No functional screen resembles a generic AI landing page or stock card dashboard.
 - Typography, spacing, surfaces, status, icons, and empty states are consistent across all routes.
@@ -1409,6 +1624,9 @@ Frontend errors and mutations include an operation ID that can be matched to gat
 - Role and authority rendering.
 - Relative/exact time behavior.
 - Reduced-motion decisions.
+- Effective model-set/default/reasoning validation and no-silent-substitution rules.
+- Runtime-scoped credential projection and authentication-operation state reduction.
+- Redaction classifiers for tokens, authorization URLs, device codes, credential stores, and raw auth errors.
 
 ### 26.2 Component tests
 
@@ -1417,6 +1635,9 @@ Frontend errors and mutations include an operation ID that can be matched to gat
 - Cancellation intermediate state.
 - Clean and unclean handoff confirmation.
 - Runtime unknown quota vs 0%.
+- Model catalog available, stale, deprecated, restricted, and refresh-failed states.
+- Authentication signed-out, pending browser, pending device, authenticated, expired, restricted, cancelled, timed-out, and failed states.
+- Logout consequence dialog with active work and expired device-code behavior.
 - Virtualized list focus preservation.
 - Dialog/popover focus restoration and Escape behavior.
 - Toast pause/coalescing behavior.
@@ -1429,6 +1650,9 @@ Frontend errors and mutations include an operation ID that can be matched to gat
 - Redacted DTO snapshots.
 - SSE replay, keepalive, backpressure, retention gap, and reconnect.
 - Configuration validate/apply/rollback and readback.
+- Runtime model-catalog metadata mapping, pagination, policy intersection, and refresh readback.
+- ChatGPT/device/reference login, status, cancel, timeout, logout, runtime isolation, and forced-policy enforcement.
+- Auth endpoints reject raw secrets and general browser DTOs exclude authorization URLs, device codes, and credential-cache material.
 
 ### 26.4 End-to-end tests
 
@@ -1443,6 +1667,11 @@ Frontend errors and mutations include an operation ID that can be matched to gat
 9. Disconnect the browser stream during terminal completion and recover without a gap.
 10. Inspect result versions, changed files, observed tests, and unverified claims.
 11. Apply a validated runtime configuration change and verify audited readback.
+12. Sign one runtime in with ChatGPT, refresh during the pending flow, and verify one recovered operation plus redacted status readback.
+13. Complete and expire device-code flows, proving ephemeral code cleanup.
+14. Authenticate a second runtime through an API-key reference and prove the secret value never entered a browser payload, URL, log, event, or process argument.
+15. Refresh both model catalogs, configure allowed/default model and reasoning effort, and verify active agents remain unchanged.
+16. Log out one runtime with consequence confirmation and verify the other runtime remains authenticated.
 
 ### 26.5 Chaos and race tests
 
@@ -1455,6 +1684,12 @@ Frontend errors and mutations include an operation ID that can be matched to gat
 - Stream cursor falls outside retention.
 - Two operators submit conflicting configuration versions.
 - Slow client exceeds stream buffer.
+- Two administrators start login for the same runtime concurrently.
+- Browser reloads after receiving an authorization URL but before login completes.
+- Auth operation succeeds immediately before cancel or timeout.
+- Gateway or runtime restarts during login/logout and reconciles the owned process and readback.
+- Model availability changes between configuration validation and apply.
+- Runtime authentication expires while an active turn or continuation is pending.
 
 ### 26.6 Visual regression matrix
 
@@ -1467,6 +1702,8 @@ Required routes:
 - Result with full evidence, partial evidence, and no observed tests.
 - Attention approval, user input, expired, and unclean handoff.
 - Runtime ready, limited, degraded, offline, and unknown quota.
+- Runtime models available, stale, deprecated, restricted, and refresh-failed.
+- Runtime authentication signed out, waiting for browser/device, authenticated, expired, restricted, failed, and logout-confirmation.
 - Worktree clean, dirty, leased, and anomalous.
 - Settings valid, invalid, applying, and rollback failure.
 
@@ -1499,7 +1736,7 @@ Phases sequence implementation; all are required for the release described by th
 - Extract transport-neutral application service.
 - Define versioned browser DTOs and redaction boundary.
 - Build design tokens, typography, icons, motion primitives, and component harness.
-- Prototype overview, agent list, detail, composer, attention, and runtime views with representative fixtures.
+- Prototype overview, agent list, detail, composer, attention, runtime, model, and authentication views with representative fixtures.
 - Validate accessibility and visual direction before feature expansion.
 
 Exit gate: reviewed interactive prototype, contract tests, and no unresolved core information-architecture decisions.
@@ -1523,11 +1760,13 @@ Exit gate: lifecycle parity tests and chaos/race suite pass.
 ### Phase 3: Administration
 
 - Runtime management.
+- Runtime-authoritative model catalog, allowed/default model policy, reasoning effort, deprecation, and explicit refresh.
+- Credential-reference configuration plus ChatGPT browser/device login, API-key/access-token reference login, status, cancel, timeout, and runtime-scoped logout.
 - Allowed roots and policy configuration.
 - Validate/apply/rollback/readback.
 - Role enforcement and audit export.
 
-Exit gate: configuration failure cannot corrupt the last valid state or reveal secrets.
+Exit gate: configuration/authentication failure cannot corrupt the last valid state, affect another runtime boundary, or reveal secrets; model and auth operations pass readback and race tests.
 
 ### Phase 4: Release hardening
 
@@ -1548,6 +1787,9 @@ Exit gate: every Definition of Done item is evidenced.
 - Resumable event cursor with explicit retention boundary.
 - Server-side authentication, role authorization, CSRF, and session management.
 - Atomic validated configuration service with rollback/readback.
+- Runtime adapters that expose authenticated account status, dynamic model catalogs, supported reasoning efforts, login/logout lifecycle, and forced-policy outcomes without returning secrets.
+- An isolated `CODEX_HOME` or equivalent credential boundary per runtime plus an owned-process supervisor for bounded authentication operations.
+- A server-only, allowlisted secret-reference resolver capable of safe stdin injection and cleanup.
 - Safe bounded evidence/diff retrieval.
 - Accessible component primitives with trigger-aware positioning and reliable focus management.
 - A browser automation stack, accessibility scanner, visual regression runner, and performance test harness.
@@ -1565,6 +1807,9 @@ Exact frontend framework, component primitive library, test runner, and bundler 
 | Motion harms speed | Repeated actions feel sluggish | Frequency framework; keyboard actions instant; <300 ms limit |
 | Browser renders untrusted content | XSS or data exfiltration | Plain text by default, strict sanitizer/CSP, no remote content |
 | Configuration UI leaks secrets | Credential exposure | References only, server redaction, no resolved path/value |
+| Login flow leaks OAuth/device material | Account compromise | Ephemeral no-store fields, Codex-owned callback, no logs/analytics/persistence, bounded expiry |
+| Logout or login crosses runtime boundary | Wrong account cleared or used | Dedicated `CODEX_HOME`, runtime-scoped process ownership, isolation tests, status readback |
+| Stale catalog or silent fallback changes model | Incorrect cost/capability/context | Runtime-authoritative catalog, fail-closed exact requests, explicit alternatives, no active-agent rewrite |
 | Mobile hides capability | Operator cannot intervene safely | Full action parity with responsive reflow and sticky action dock |
 | Live updates disrupt reading | Lost focus/context | Stable ordering, updates-available affordance, focus preservation |
 | “Unknown” appears healthy | Unsafe routing decisions | First-class unknown/stale states, never coerce to zero/success |
@@ -1593,6 +1838,13 @@ Exact frontend framework, component primitive library, test runner, and bundler 
 18. WCAG 2.2 AA is a release requirement, not post-release cleanup.
 19. Desktop, tablet, and mobile retain complete operational capability.
 20. A green local test run, hosted CI, accessibility audit, visual review, security review, and live runtime smoke remain separate evidence gates.
+21. Credential settings manage symbolic references and lifecycle only; the Console never accepts, reveals, transfers, or persists secret values.
+22. Every Codex runtime is an isolated authentication boundary with a dedicated `CODEX_HOME`; login and logout are scoped to one runtime.
+23. Browser-initiated ChatGPT login delegates authentication and credential storage to the supported Codex runtime; the gateway never becomes the OAuth token endpoint.
+24. `auth.json` and OS keyring contents are never uploaded, downloaded, viewed, copied, or moved through the Console.
+25. Model catalogs are dynamic and runtime-authoritative; normative product logic does not hard-code the current OpenAI catalog.
+26. Model default, reasoning, availability, deprecation, or upgrade changes never silently rewrite active agent history or context-bearing continuation behavior.
+27. Authentication and model mutations are administrator-only, idempotent, audited, version-checked, terminal-state tracked, and independently read back.
 
 ## 31. Intentionally deferred choices
 
@@ -1616,6 +1868,7 @@ The Web Console is release-complete only when all of the following are true:
 
 - Every required route and workflow exists.
 - All router lifecycle capabilities have parity and traceability.
+- Model and authentication settings cover every supported runtime adapter state without a CLI-only prerequisite for normal operation.
 - No capability is silently removed at narrow viewports.
 - Empty, loading, partial, stale, offline, error, and permission-denied states are designed.
 
@@ -1624,6 +1877,7 @@ The Web Console is release-complete only when all of the following are true:
 - Durable state and cursor recovery are proven under restart and race conditions.
 - No duplicate mutation occurs after response loss or browser reload.
 - Cancellation, handoff, interaction, and evidence semantics match the core PRD.
+- Model selection/default effects and authentication operations remain runtime-scoped and correct under reconnect, restart, concurrency, and stale-version races.
 - Local and browser DTO schemas are versioned and contract-tested.
 
 ### Design quality
@@ -1644,6 +1898,7 @@ The Web Console is release-complete only when all of the following are true:
 - Threat model and security review are complete.
 - Auth, role, CSRF, Origin, CSP, CORS, session, XSS, and redaction tests pass.
 - Secret scan and browser-payload inspection find no live credentials or secret values.
+- Login/logout threat-model tests prove credential isolation, ephemeral OAuth/device handling, fixed server-owned process invocation, and no `auth.json` transfer path.
 
 ### Performance and operations
 
@@ -1670,5 +1925,20 @@ No single automated score substitutes for this complete evidence set.
 | `agent_result` | Result/evidence tabs | Versioned reported and observed sections |
 | `agent_respond` | Attention inbox | Exact interaction resolution |
 | `router_diagnostics` | Overview/diagnostics | Registry, runtime, lease, event, and counter state |
+| Runtime model catalog/policy | Runtime models / Settings → Models | Runtime-reported catalog, validation, refresh, and audited readback |
+| Runtime authentication status | Runtime authentication / Settings → Credentials | Redacted account projection and independent status readback |
+| Runtime login/logout lifecycle | Runtime authentication | Durable operation, terminal event, isolation proof, and audited readback |
+| Configuration validation/apply | Settings | Redacted diff, expected version, atomic apply/rollback, and readback |
 
 This matrix is a release checklist. A capability is incomplete until its UI action, state behavior, failure handling, accessibility, security, and test evidence all exist.
+
+## 34. External reference basis
+
+The authentication and model requirements are based on current official OpenAI Codex contracts while keeping runtime capability discovery authoritative:
+
+- [Codex authentication](https://developers.openai.com/codex/auth/)
+- [Codex models](https://developers.openai.com/codex/models/)
+- [Codex configuration reference](https://developers.openai.com/codex/config-reference/)
+- [Codex CLI reference](https://developers.openai.com/codex/cli/reference/)
+
+These references can evolve. The implementation must discover supported operations and models from the installed runtime/adapter, fail closed on unknown capability, and treat this PRD's isolation, redaction, explicit-effect, and no-silent-substitution rules as stable product requirements.
