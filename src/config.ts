@@ -15,9 +15,32 @@ const providerIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/, {
 export const inferenceProviderConfigSchema = z
   .object({
     id: providerIdSchema,
+    displayName: z.string().min(1).optional(),
+    canonicalProviderId: providerIdSchema.optional(),
     baseUrl: z.url(),
     credentialRef: secretReferenceSchema.optional(),
-    keyless: z.boolean().default(false)
+    keyless: z.boolean().default(false),
+    enabled: z.boolean().optional(),
+    protocol: z.enum(["responses", "chat-completions", "anthropic-messages"]).optional(),
+    requestProfile: z
+      .enum([
+        "generic-openai",
+        "native-codex",
+        "anthropic",
+        "deepseek",
+        "kimi",
+        "qwen",
+        "glm",
+        "gemini",
+        "minimax",
+        "grok",
+        "ollama",
+        "github-copilot",
+        "opencode",
+        "command-code",
+        "meta"
+      ])
+      .optional()
   })
   .superRefine((provider, context) => {
     const url = new URL(provider.baseUrl);
@@ -69,8 +92,36 @@ export const inferenceProviderConfigSchema = z
 export const inferenceModelConfigSchema = z.object({
   id: z.string().min(1),
   providerId: providerIdSchema,
-  upstreamModel: z.string().min(1)
+  upstreamModel: z.string().min(1),
+  displayName: z.string().min(1).optional(),
+  contextWindow: z.number().int().positive().optional(),
+  maxOutputTokens: z.number().int().positive().optional()
 });
+
+export const inferenceTranslationConfigSchema = z
+  .object({
+    baseUrl: z.url(),
+    capabilityRef: secretReferenceSchema,
+    healthPath: z.string().regex(/^\//).default("/health/liveliness"),
+    requestTimeoutMs: z.number().int().positive().max(60_000).default(5_000)
+  })
+  .superRefine((translation, context) => {
+    const url = new URL(translation.baseUrl);
+    if (!["127.0.0.1", "::1", "localhost"].includes(url.hostname)) {
+      context.addIssue({
+        code: "custom",
+        path: ["baseUrl"],
+        message: "The LiteLLM translation core must be loopback-local"
+      });
+    }
+    if (url.username || url.password || url.search || url.hash) {
+      context.addIssue({
+        code: "custom",
+        path: ["baseUrl"],
+        message: "The LiteLLM translation URL cannot contain credentials, query strings, or fragments"
+      });
+    }
+  });
 
 export const inferenceConfigSchema = z
   .object({
@@ -79,6 +130,9 @@ export const inferenceConfigSchema = z
     port: z.number().int().min(0).max(65_535).default(4202),
     maxBodyBytes: z.number().int().positive().max(64 * 1024 * 1024).default(8 * 1024 * 1024),
     requestTimeoutMs: z.number().int().positive().max(60 * 60 * 1000).default(15 * 60 * 1000),
+    preflightBytes: z.number().int().positive().max(1024 * 1024).default(64 * 1024),
+    preflightTimeoutMs: z.number().int().positive().max(30_000).default(2_000),
+    translation: inferenceTranslationConfigSchema.optional(),
     providers: z.array(inferenceProviderConfigSchema).min(1),
     models: z.array(inferenceModelConfigSchema).min(1)
   })
@@ -164,6 +218,7 @@ export type RuntimeConfig = CodexRuntimeConfig | ExternalRuntimeConfig;
 export type InferenceProviderConfig = z.infer<typeof inferenceProviderConfigSchema>;
 export type InferenceModelConfig = z.infer<typeof inferenceModelConfigSchema>;
 export type InferenceConfig = z.infer<typeof inferenceConfigSchema>;
+export type InferenceTranslationConfig = z.infer<typeof inferenceTranslationConfigSchema>;
 export type RouterConfig = z.infer<typeof routerConfigSchema>;
 
 export async function loadConfig(configPath: string): Promise<RouterConfig> {

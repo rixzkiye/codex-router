@@ -1,0 +1,12 @@
+# CI-only boot fixture. It has no provider credential and cannot spend quota.
+model_list: []
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  disable_spend_logs: true
+router_settings:
+  num_retries: 0
+  allowed_fails: 0
+  cooldown_time: 0
+litellm_settings:
+  cache: false
+  drop_params: false

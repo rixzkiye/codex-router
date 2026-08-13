@@ -1,13 +1,17 @@
 import {
   Activity,
   BellRing,
+  BrainCircuit,
   Boxes,
   ChevronLeft,
   ChevronRight,
   Command,
   FileClock,
   FolderGit2,
+  Gauge,
+  HardDrive,
   Inbox,
+  KeyRound,
   LayoutDashboard,
   Menu,
   Moon,
@@ -15,7 +19,9 @@ import {
   Search,
   Server,
   Settings,
+  Stethoscope,
   Sun,
+  Waypoints,
   X
 } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -35,6 +41,16 @@ import {
   WorktreesPage,
   type PageProps
 } from "./pages";
+import {
+  AccountsPage,
+  LocalModelsPage,
+  ModelsPage,
+  PlatformDiagnosticsPage,
+  ProvidersPage,
+  RequestsPage,
+  RoutingPage,
+  UsagePage
+} from "./platform-pages";
 import type { BootstrapDto, ConnectionState } from "./types";
 
 const api = new ConsoleApi();
@@ -44,6 +60,14 @@ const NAVIGATION = [
   { href: "/overview", label: "Overview", icon: LayoutDashboard },
   { href: "/agents", label: "Agents", icon: Boxes },
   { href: "/attention", label: "Attention", icon: Inbox },
+  { href: "/providers", label: "Providers", icon: Server },
+  { href: "/accounts", label: "Accounts", icon: KeyRound },
+  { href: "/models", label: "Models", icon: BrainCircuit },
+  { href: "/routing", label: "Routing", icon: Waypoints },
+  { href: "/requests", label: "Requests", icon: Activity },
+  { href: "/usage", label: "Usage", icon: Gauge },
+  { href: "/local-models", label: "Local Models", icon: HardDrive },
+  { href: "/diagnostics", label: "Diagnostics", icon: Stethoscope },
   { href: "/runtimes", label: "Runtimes", icon: Server },
   { href: "/worktrees", label: "Worktrees", icon: FolderGit2 },
   { href: "/events", label: "Events", icon: FileClock },
@@ -156,6 +180,17 @@ function renderRoute(pathname: string, props: PageProps): ReactNode {
   if (pathname === "/agents/monitor") return <MonitorPage {...props} />;
   if (/^\/agents\/[^/]+$/.test(pathname)) return <AgentDetailPage {...props} agentId={pathname.split("/")[2]!} />;
   if (pathname === "/attention") return <AttentionPage {...props} />;
+  if (pathname === "/providers") return <ProvidersPage {...props} />;
+  if (/^\/providers\/[^/]+$/.test(pathname)) return <ProvidersPage {...props} providerId={decodeURIComponent(pathname.split("/")[2]!)} />;
+  if (pathname === "/accounts") return <AccountsPage {...props} />;
+  if (pathname === "/models") return <ModelsPage {...props} />;
+  if (/^\/models\/[^/]+$/.test(pathname)) return <ModelsPage {...props} modelId={decodeURIComponent(pathname.split("/")[2]!)} />;
+  if (pathname === "/routing") return <RoutingPage {...props} />;
+  if (pathname === "/requests") return <RequestsPage {...props} />;
+  if (/^\/requests\/[^/]+$/.test(pathname)) return <RequestsPage {...props} requestId={decodeURIComponent(pathname.split("/")[2]!)} />;
+  if (pathname === "/usage") return <UsagePage {...props} />;
+  if (pathname === "/local-models") return <LocalModelsPage {...props} />;
+  if (pathname === "/diagnostics") return <PlatformDiagnosticsPage {...props} />;
   if (pathname === "/runtimes") return <RuntimesPage {...props} />;
   if (/^\/runtimes\/[^/]+$/.test(pathname)) return <RuntimeDetailPage {...props} runtimeId={pathname.split("/")[2]!} />;
   if (pathname === "/worktrees") return <WorktreesPage {...props} />;

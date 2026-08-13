@@ -10,18 +10,31 @@
     "port": 4202,
     "maxBodyBytes": 8388608,
     "requestTimeoutMs": 900000,
+    "preflightBytes": 65536,
+    "preflightTimeoutMs": 2000,
+    "translation": {
+      "baseUrl": "http://127.0.0.1:4000",
+      "capabilityRef": "env:CODEX_ROUTER_LITELLM_TOKEN",
+      "healthPath": "/health/liveliness",
+      "requestTimeoutMs": 5000
+    },
     "providers": [
       {
         "id": "example-provider",
+        "displayName": "Example Responses Provider",
         "baseUrl": "https://api.example.invalid/v1",
-        "credentialRef": "env:CODEX_ROUTER_EXAMPLE_PROVIDER_KEY"
+        "credentialRef": "env:CODEX_ROUTER_EXAMPLE_PROVIDER_KEY",
+        "protocol": "responses",
+        "requestProfile": "generic-openai",
+        "enabled": true
       }
     ],
     "models": [
       {
         "id": "example-provider/model",
         "providerId": "example-provider",
-        "upstreamModel": "model"
+        "upstreamModel": "model",
+        "displayName": "Example Model"
       }
     ]
   },

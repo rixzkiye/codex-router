@@ -22,6 +22,7 @@ import { CodexAppServerAdapter } from "./runtime/codex-app-server.js";
 import { ExternalProcessAdapter } from "./runtime/external-process.js";
 import type { RuntimeAdapter, RuntimeTaskContext } from "./runtime/types.js";
 import { WorktreeInspector } from "./worktree.js";
+import { PlatformService } from "./platform/service.js";
 
 const NONTERMINAL = [
   "queued",
@@ -41,6 +42,7 @@ export interface RouterDependencies {
 
 export class CodexRouter {
   readonly registry: Registry;
+  readonly platform: PlatformService;
   readonly #database: RouterDatabase;
   readonly #scheduler: Scheduler;
   readonly #worktrees: WorktreeInspector;
@@ -59,6 +61,7 @@ export class CodexRouter {
   ) {
     this.#database = database;
     this.registry = new Registry(database);
+    this.platform = new PlatformService(database.connection, this.registry, config.inference);
     this.#worktrees = worktrees;
     this.#scheduler = new Scheduler(this.registry);
     this.#distiller = new ResultDistiller(this.registry, worktrees);
@@ -90,6 +93,7 @@ export class CodexRouter {
     this.#leaseTimers.clear();
     for (const unsubscribe of this.#unsubscribers) unsubscribe();
     await Promise.allSettled([...this.#adapters.values()].map((adapter) => adapter.close()));
+    await this.platform.close();
     this.#database.close();
   }
 

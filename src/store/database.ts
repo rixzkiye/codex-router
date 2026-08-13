@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 export class RouterDatabase {
   readonly connection: Database.Database;
@@ -172,6 +172,104 @@ export class RouterDatabase {
         value INTEGER NOT NULL DEFAULT 0
       );
 
+      CREATE TABLE IF NOT EXISTS platform_providers (
+        id TEXT PRIMARY KEY,
+        definition_json TEXT NOT NULL,
+        definition_hash TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        version INTEGER NOT NULL DEFAULT 1,
+        authentication_json TEXT NOT NULL,
+        entitlement_json TEXT NOT NULL,
+        health_json TEXT NOT NULL,
+        catalog_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS platform_models (
+        gateway_id TEXT PRIMARY KEY,
+        definition_json TEXT NOT NULL,
+        definition_hash TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        version INTEGER NOT NULL DEFAULT 1,
+        compatibility_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS platform_operations (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        target_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        state TEXT NOT NULL,
+        progress REAL,
+        message TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        expected_version INTEGER,
+        result_json TEXT,
+        error_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        UNIQUE(actor, kind, idempotency_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS platform_event_journal (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT NOT NULL UNIQUE,
+        event_type TEXT NOT NULL,
+        target_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        operation_id TEXT,
+        actor TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS inference_requests (
+        id TEXT PRIMARY KEY,
+        attempt_id TEXT NOT NULL,
+        caller_class TEXT NOT NULL,
+        runtime_id TEXT,
+        provider_id TEXT NOT NULL,
+        account_ref_id TEXT,
+        model_id TEXT NOT NULL,
+        profile_hash TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        connected_at TEXT,
+        first_semantic_at TEXT,
+        completed_at TEXT,
+        status TEXT NOT NULL,
+        error_class TEXT,
+        cancelled INTEGER NOT NULL DEFAULT 0,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        failover_count INTEGER NOT NULL DEFAULT 0,
+        semantic_output_seen INTEGER NOT NULL DEFAULT 0,
+        usage_json TEXT NOT NULL,
+        flags_json TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS platform_usage_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id TEXT NOT NULL REFERENCES inference_requests(id) ON DELETE CASCADE,
+        provider_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        cached_input_tokens INTEGER,
+        reasoning_tokens INTEGER,
+        estimated_input_tokens INTEGER,
+        observed_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS platform_settings (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS agents_status_idx ON agents(status, updated_at);
       CREATE INDEX IF NOT EXISTS agents_project_idx ON agents(project_key, updated_at);
       CREATE INDEX IF NOT EXISTS incarnations_agent_idx ON incarnations(agent_id, created_at);
@@ -179,6 +277,11 @@ export class RouterDatabase {
       CREATE INDEX IF NOT EXISTS events_agent_idx ON event_journal(agent_id, sequence);
       CREATE INDEX IF NOT EXISTS events_runtime_idx ON event_journal(runtime_id, sequence);
       CREATE INDEX IF NOT EXISTS results_agent_idx ON results(agent_id, version DESC);
+      CREATE INDEX IF NOT EXISTS platform_events_target_idx ON platform_event_journal(target_type, target_id, sequence);
+      CREATE INDEX IF NOT EXISTS platform_operations_state_idx ON platform_operations(state, updated_at);
+      CREATE INDEX IF NOT EXISTS inference_requests_started_idx ON inference_requests(started_at DESC);
+      CREATE INDEX IF NOT EXISTS inference_requests_provider_idx ON inference_requests(provider_id, started_at DESC);
+      CREATE INDEX IF NOT EXISTS platform_usage_provider_idx ON platform_usage_events(provider_id, observed_at DESC);
     `);
 
     const current = Number(

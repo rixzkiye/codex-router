@@ -9,6 +9,10 @@ import { createMcpServer } from "./mcp.js";
 import { CodexRouter } from "./router.js";
 import { createJsonLogger, SecretRedactor } from "./security.js";
 import { startWebGateway } from "./web/server.js";
+import { RouterDatabase } from "./store/database.js";
+import { Registry } from "./store/registry.js";
+import { PlatformService } from "./platform/service.js";
+import { runPlatformCli } from "./platform/cli.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -16,21 +20,41 @@ async function main(): Promise<void> {
   const redactor = new SecretRedactor();
   const logger = createJsonLogger(redactor);
   const config = await loadConfig(configPath);
+  if (args[0] === "platform") {
+    const database = new RouterDatabase(config.databasePath);
+    const registry = new Registry(database);
+    const platform = new PlatformService(database.connection, registry, config.inference);
+    const platformRouter = { platform } as unknown as CodexRouter;
+    const application = new RouterApplicationService(platformRouter, redactor);
+    try {
+      await runPlatformCli(args.slice(1).filter((arg) => arg !== "--config" && arg !== configPath), application);
+    } finally {
+      await platform.close();
+      database.close();
+    }
+    return;
+  }
   if (args[0] === "inference") {
     if (!config.inference) {
       throw new Error("Inference gateway configuration is missing");
     }
     const host = option(args, "--host");
     const port = numericOption(args, "--port");
+    const database = new RouterDatabase(config.databasePath);
+    const registry = new Registry(database);
+    const platform = new PlatformService(database.connection, registry, config.inference);
     const gateway = await startInferenceGateway(config.inference, redactor, logger, {
       ...(host ? { host } : {}),
-      ...(port === undefined ? {} : { port })
+      ...(port === undefined ? {} : { port }),
+      platform
     });
     let closing = false;
     const shutdown = async () => {
       if (closing) return;
       closing = true;
       await gateway.close();
+      await platform.close();
+      database.close();
     };
     process.once("SIGINT", () => void shutdown().finally(() => process.exit(0)));
     process.once("SIGTERM", () => void shutdown().finally(() => process.exit(0)));

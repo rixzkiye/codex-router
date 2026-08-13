@@ -1,0 +1,6 @@
+# Direct Python requirements for the LiteLLM gateway.
+#
+# Update direct pins here, then regenerate requirements/litellm.txt as a
+# universal, hash-locked closure. CI installs only that exact lock.
+litellm[proxy]==1.96.0
+fastapi==0.139.2

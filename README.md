@@ -25,10 +25,15 @@ The core invariant is: logical agent identity is durable, execution context is r
 - Codex App Server JSONL supervision with `initialize`, thread start/read/resume, turn start/steer/interrupt, lifecycle normalization, approvals, sparse quota updates, and restart reconciliation.
 - A normalized external-provider JSONL bridge contract for configured OpenAI, DeepSeek, or other API worker processes.
 - A loopback-only OpenAI Responses inference gateway with exact model-to-provider routing, credential isolation, bounded request bodies, streaming backpressure, and no automatic replay or failover.
+- A deterministic provider/model registry spanning the native, API-key, OAuth-forwarder, CLI-session, and local provider families in the Platform PRD, with conservative publication states and collision-safe identities.
+- A hash-pinned LiteLLM translation closure, generated no-retry/no-fallback/no-cache configuration, independent edge-to-translator capability, and an actual-proxy hosted CI boot probe.
+- Model-scoped compatibility profiles for DeepSeek, Kimi, Qwen, GLM, Gemini, Anthropic, MiniMax, Grok, Ollama, and strict tool-history repair, with transformation categories recorded instead of prompt bodies.
+- Durable platform operations, append-before-project platform events, provider/catalog/model projections, sanitized request timing, provider usage, quota-header freshness, and generated-artifact manifests.
 - Clean/unclean checkpoints, explicit cross-runtime hydration, policy-gated quota handoff, and no blind prompt replay.
 - Versioned compact results that separate worker-reported claims from observed worktree and command evidence.
 - Early recursive credential redaction and authority checks on pending approval responses.
 - A responsive Web Console over the same router application service, with a resumable SSE projection, lifecycle controls, durable attention inbox, evidence views, runtime/worktree/event diagnostics, and an Emil-derived accessible design system.
+- Console workbenches for Providers, Accounts, Models, Routing, Requests, Usage, Local Models, and Diagnostics, including resumable discovery, mock compatibility, explicit unknown/stale states, and version-checked mutations.
 - A loopback-only Web gateway with one-time fragment bootstrap, HttpOnly SameSite session cookies, Origin/CSRF enforcement, strict CSP, bounded request bodies, and versioned redacted browser DTOs.
 
 ## Requirements
@@ -38,6 +43,7 @@ The core invariant is: logical agent identity is durable, execution context is r
 - SQLite native build support for `better-sqlite3` (prebuilt binaries are normally used).
 - A supported `codex` binary for Codex-backed runtimes.
 - One authorized `CODEX_HOME` directory per Codex runtime.
+- Python 3.10 or newer only when a configured provider requires LiteLLM translation. The complete closure is installed from `requirements/litellm.txt` with hashes.
 
 The concrete App Server boundary was validated against `openai/codex` commit `363427b5e3fe1b6d7499e6bc47651f62a5a3b1d2` and codex-cli `0.147.0`. The official protocol documentation is [Codex App Server](https://developers.openai.com/codex/app-server/). Regenerate or inspect the installed version’s types before changing request shapes:
 
@@ -87,7 +93,21 @@ For a representative local UI fixture without real credentials or provider calls
 pnpm preview:web
 ```
 
-Model catalogs and account status remain runtime-authoritative. When an installed adapter does not expose those capabilities, the Console shows an explicit unavailable/unknown state and disables the related mutation instead of inventing a model list or authentication result.
+Model catalogs and account status remain provider/runtime-authoritative. The Console shows unavailable, unknown, stale, restricted, and experimental states explicitly and disables mutations whose evidence preconditions are not met.
+
+### Platform operations
+
+The same application service used by the Console is available through the local CLI:
+
+```bash
+node dist/index.js platform status --config ./codex-router.config.json
+node dist/index.js platform providers --config ./codex-router.config.json
+node dist/index.js platform doctor --config ./codex-router.config.json
+node dist/index.js platform artifacts --output ./data/generated --config ./codex-router.config.json
+node dist/index.js platform support-bundle --output ./data/support-$(date +%s).json --config ./codex-router.config.json
+```
+
+Provider and model mutations are version-checked, idempotent, audited, and read back before completion. Support bundles are created locally with mode `0600`, list their safe projections, exclude credential references and request content, and are never uploaded automatically.
 
 Set every referenced runtime environment variable in the router process, for example:
 
@@ -139,19 +159,22 @@ The bridge, not the router, owns provider-specific model calls and tool executio
 
 ## Model inference gateway
 
-The optional inference gateway is a separate data plane for Codex-compatible Responses API traffic. It does not own agent lifecycle, tools, worktrees, continuations, or handoffs. V1 deliberately supports only upstreams that implement the OpenAI Responses contract; provider-native Chat Completions or Messages translation still belongs in a tested external bridge.
+The optional inference gateway is a separate data plane for Codex-compatible Responses API traffic. It does not own agent lifecycle, tools, worktrees, continuations, or handoffs. Native Responses routes remain direct; configured Chat Completions and Anthropic Messages routes go through the loopback-only LiteLLM translation core under a separate internal capability.
 
 Configure `inference` with an `env:` caller token reference, provider endpoints, provider credential references, and exact public-to-upstream model mappings. Then run:
 
 ```bash
 export CODEX_ROUTER_INFERENCE_TOKEN="$(openssl rand -hex 32)"
 export CODEX_ROUTER_EXAMPLE_PROVIDER_KEY="provider credential"
+export CODEX_ROUTER_LITELLM_TOKEN="$(openssl rand -hex 32)"
 node dist/index.js inference --config ./codex-router.config.json
 ```
 
 The command prints a loopback base URL such as `http://127.0.0.1:4202/v1`. Clients authenticate to it with the caller token. The gateway authenticates before reading model traffic, strips caller and Codex identity headers, removes `client_metadata`, rewrites only the configured model ID, and injects only the selected provider credential. `GET /health` is credential-free and contains counts only; `GET /v1/models`, `POST /v1/responses`, and `POST /v1/responses/compact` require caller authentication.
 
-Each request has exactly one selected provider. The gateway never retries or fails over a request, including after a stream has begun. This preserves the router's no-replay boundary and keeps continuation/provider affinity an explicit control-plane decision.
+Each request has exactly one selected provider. The gateway stages a bounded SSE preflight, records the first semantic boundary, rejects a provably empty completion before commitment, and never replays or fails over after semantic output. This preserves the router's no-replay boundary and keeps continuation/provider affinity an explicit control-plane decision.
+
+Compressed JSON requests support bounded gzip, deflate, and Brotli decoding. Zstandard is accepted only when the running Node build exposes a bounded decoder; otherwise the edge returns a truthful `unsupported_content_encoding` response.
 
 ## Lifecycle and recovery semantics
 
@@ -175,7 +198,9 @@ Run the complete local gate:
 pnpm verify
 ```
 
-The suite covers state/idempotency behavior, sparse quotas, event deduplication, Codex App Server and external-provider JSONL contracts, parallel event waits, same-thread continuation, cancellation confirmation, observed results, authority/redaction, single-writer fencing, clean and unclean handoff, structured usage-limit recovery, and restart reconciliation without duplicate start.
+The suite covers state/idempotency behavior, sparse quotas, event deduplication, Codex App Server and external-provider JSONL contracts, parallel event waits, same-thread continuation, cancellation confirmation, observed results, authority/redaction, single-writer fencing, clean and unclean handoff, structured usage-limit recovery, restart reconciliation without duplicate start, provider registry and profile contracts, compressed bodies, empty-stream preflight, catalog discovery, platform operations, support-bundle redaction, and Console accessibility.
+
+`pnpm verify` also verifies that the LiteLLM direct pins exist in the universal hash lock. Hosted `litellm.yml` separately installs the complete closure with `--require-hashes`, starts the real proxy, and probes `/health/liveliness`; this is not inferred from lock resolution.
 
 Live credential-backed App Server and provider tests are intentionally operator-run because credentials never enter repository fixtures.
 
