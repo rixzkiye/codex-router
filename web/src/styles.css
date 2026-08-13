@@ -1152,6 +1152,91 @@ kbd {
   gap: 14px;
 }
 
+.service-console {
+  display: grid;
+  gap: 16px;
+}
+
+.service-console__summary {
+  display: grid;
+  align-items: center;
+  gap: 12px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.service-console__summary h3,
+.service-console__summary p {
+  margin: 0;
+}
+
+.service-console__summary p {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.service-console__mark {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 1px solid var(--hairline);
+  border-radius: 9px;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+}
+
+.service-console__mark svg {
+  width: 18px;
+  height: 18px;
+}
+
+.service-console__controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.service-preferences {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.service-preferences label {
+  display: grid;
+  align-items: start;
+  gap: 9px;
+  padding: 11px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+  background: var(--surface-subtle);
+  cursor: pointer;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.service-preferences label:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.service-preferences input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--focus);
+}
+
+.service-preferences span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.service-preferences small {
+  color: var(--text-muted);
+}
+
 .installation-fields {
   display: grid;
   gap: 12px;
@@ -3606,8 +3691,22 @@ details .payload-preview {
   .local-download,
   .installation-fields,
   .local-model-row,
-  .settings-policy-grid {
+  .settings-policy-grid,
+  .service-preferences {
     grid-template-columns: 1fr;
+  }
+
+  .service-console__summary {
+    align-items: start;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .service-console__summary .state-pill {
+    grid-column: 2;
+  }
+
+  .service-console__controls .button {
+    flex: 1 1 150px;
   }
 
   .local-model-row__icon { display: none; }
@@ -3658,7 +3757,9 @@ details .payload-preview {
   .state-pill,
   .diagnostic-card,
   .provider-card,
-  .account-card {
+  .account-card,
+  .service-console__mark,
+  .service-preferences label {
     color: CanvasText;
   }
 

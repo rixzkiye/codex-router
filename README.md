@@ -42,7 +42,7 @@ The core invariant is: logical agent identity is durable, execution context is r
 ## Requirements
 
 - Node.js 22.13 or newer.
-- pnpm 10.
+- npm for end-user installation; pnpm 10 is required only to develop from source.
 - SQLite native build support for `better-sqlite3` (prebuilt binaries are normally used).
 - A supported `codex` binary for Codex-backed runtimes.
 - One authorized `CODEX_HOME` directory per Codex runtime.
@@ -58,23 +58,49 @@ codex app-server generate-json-schema --out ./schemas
 ## Install and run
 
 ```bash
-pnpm install
-cp codex-router.config.example.json codex-router.config.json
-pnpm build
-node dist/index.js --config ./codex-router.config.json
+npm install --global @rixzkiye/codex-router
+codex-router setup
+codex-router
 ```
 
-Register it in an MCP host as a stdio server. A representative command is:
+`setup` is the only first-run mutation authority. It creates a private managed config, asks whether the router should run in the background and start at login, and asks whether to register the MCP server with Codex. Package installation itself never changes Codex or service configuration.
 
-```json
-{
-  "command": "node",
-  "args": [
-    "/absolute/path/to/codex-router/dist/index.js",
-    "--config",
-    "/absolute/path/to/codex-router/codex-router.config.json"
-  ]
-}
+With the default answers, setup installs a current-user service, registers the MCP server through the [official `codex mcp` CLI](https://learn.chatgpt.com/codex/extend/mcp/), reads both back, starts the service, and opens the local Console. The owned MCP command is:
+
+```bash
+codex mcp add codex-router \
+  --env CODEX_ROUTER_CONFIG=/absolute/managed/config.json \
+  -- codex-router mcp
+```
+
+An existing foreign `codex-router` MCP entry is never overwritten silently. Setup reports the conflict; `--adopt-mcp` is the explicit replacement boundary. Uninstall removes the entry only when current Codex readback still matches the router-owned manifest.
+
+Common commands:
+
+```bash
+codex-router                         # ensure the opted-in service is ready, then open Console
+codex-router open
+codex-router status
+codex-router start                   # foreground Console
+codex-router start --background      # explicitly opt into background mode
+codex-router stop
+codex-router restart
+codex-router logs --follow
+codex-router doctor
+codex-router mcp                     # stdio transport, intended for Codex
+codex-router uninstall --yes         # retain config, database, and logs
+```
+
+Linux uses `systemd --user`, macOS uses a per-user LaunchAgent, and Windows uses the current-user Task Scheduler. No administrator service is installed. The Console shows running/stopped/attention state, login preference, MCP readback, and exact managed paths. Turning background mode off explains that the current Console will disconnect before stopping it.
+
+The npm package is the first supported distribution. Future Homebrew and `curl` installers should consume the same signed, versioned npm/release artifact and invoke the same `setup` workflow; they should not grow a second configuration engine.
+
+To develop from source instead:
+
+```bash
+pnpm install
+pnpm build
+node dist/index.js setup --foreground --no-mcp
 ```
 
 ### Web Console

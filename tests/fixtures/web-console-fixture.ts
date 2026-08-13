@@ -20,6 +20,7 @@ import type {
 } from "../../src/runtime/types.js";
 import { createJsonLogger, SecretRedactor } from "../../src/security.js";
 import { startWebGateway } from "../../src/web/server.js";
+import type { ManagedSetup } from "../../src/platform/setup.js";
 
 const execFileAsync = promisify(execFile);
 let worktree = "";
@@ -49,6 +50,26 @@ const config: RouterConfig = {
 };
 const router = await CodexRouter.create(config, { logger, redactor, adapters: new Map([[primary.id, primary], [review.id, review]]) });
 const app = new RouterApplicationService(router, redactor);
+const managementStatus = {
+  configured: true,
+  background: true,
+  startAtLogin: true,
+  service: { state: "running", installed: true, running: true, startAtLogin: true, message: "The current-user Codex Router service is running." },
+  mcp: { state: "owned", message: "Codex readback matches the router-owned MCP entry." },
+  url: "http://127.0.0.1:4178",
+  paths: {
+    configRoot: path.join(root, "config"), configFile: path.join(root, "config", "config.json"),
+    stateRoot: root, databaseFile: config.databasePath, manifestFile: path.join(root, "setup-manifest.json"),
+    mcpManifestFile: path.join(root, "mcp-manifest.json"), controlTokenFile: path.join(root, "control-token"),
+    serviceFile: path.join(root, "codex-router.service"), logFile: path.join(root, "logs", "router.log")
+  }
+} as const;
+const management = {
+  status: async () => managementStatus,
+  setBackground: async () => managementStatus,
+  restart: async () => undefined,
+  stop: async () => undefined
+} as unknown as ManagedSetup;
 
 const running = await app.start("fixture", startRequest("running", "Implement the resilient web transport", "write", "sol-main"));
 const attention = await app.start("fixture", startRequest("attention", "Review the protected branch delivery policy", "read_only", "terra-review"));
@@ -84,7 +105,8 @@ const gateway = await startWebGateway(app, redactor, logger, {
   host: "127.0.0.1",
   port: Number(process.env.CODEX_ROUTER_FIXTURE_PORT ?? 4178),
   assetRoot: path.resolve("dist/console"),
-  bootstrapToken: "fixture-console"
+  bootstrapToken: "fixture-console",
+  management
 });
 process.stdout.write(`${gateway.bootstrapUrl}\n`);
 

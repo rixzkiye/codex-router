@@ -63,7 +63,7 @@ export interface Logger {
   error(fields: Record<string, unknown>, message: string): void;
 }
 
-export function createJsonLogger(redactor: SecretRedactor): Logger {
+export function createJsonLogger(redactor: SecretRedactor, sink: (line: string) => void = (line) => process.stderr.write(line)): Logger {
   const write = (level: string, fields: Record<string, unknown>, message: string) => {
     const output = redactor.redact({
       level,
@@ -71,7 +71,7 @@ export function createJsonLogger(redactor: SecretRedactor): Logger {
       message,
       ...fields
     });
-    process.stderr.write(`${JSON.stringify(output)}\n`);
+    sink(`${JSON.stringify(output)}\n`);
   };
   return {
     info: (fields, message) => write("info", fields, message),
