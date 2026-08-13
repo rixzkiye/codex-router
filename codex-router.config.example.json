@@ -18,6 +18,35 @@
       "healthPath": "/health/liveliness",
       "requestTimeoutMs": 5000
     },
+    "compaction": {
+      "integrityKeyRef": "env:CODEX_ROUTER_COMPACTION_KEY",
+      "maxEnvelopeBytes": 524288,
+      "maxSummaryBytes": 262144
+    },
+    "toolResultAging": {
+      "enabled": false,
+      "preserveRecent": 8,
+      "minimumBytes": 65536,
+      "headBytes": 2048,
+      "tailBytes": 2048
+    },
+    "visionBridge": {
+      "enabled": false,
+      "engineModelIds": [],
+      "fallback": false,
+      "maxDataUrlBytes": 8388608,
+      "allowedRemoteHosts": [],
+      "cacheEntries": 64
+    },
+    "localModels": {
+      "baseUrl": "http://127.0.0.1:11434"
+    },
+    "routingPolicy": {
+      "limitedThreshold": 0.2,
+      "criticalThreshold": 0.05,
+      "recoveryMargin": 0.05,
+      "policyVersion": "routing/v1"
+    },
     "providers": [
       {
         "id": "example-provider",
@@ -34,7 +63,31 @@
         "id": "example-provider/model",
         "providerId": "example-provider",
         "upstreamModel": "model",
-        "displayName": "Example Model"
+        "displayName": "Example Model",
+        "contextWindow": 128000,
+        "maxOutputTokens": 16384,
+        "enabled": true,
+        "publication": "listed",
+        "capabilities": {
+          "input": ["text"],
+          "nativeImage": false,
+          "derivedImage": false,
+          "reasoningEfforts": ["low", "medium", "high"],
+          "defaultReasoningEffort": "medium",
+          "tools": true,
+          "forcedToolChoice": false,
+          "parallelTools": false,
+          "structuredOutput": true,
+          "standaloneSearch": false,
+          "compaction": true,
+          "collaboration": false
+        },
+        "pricing": {
+          "source": "operator-approved-example",
+          "version": "2026-08-13",
+          "inputPerMillion": 1,
+          "outputPerMillion": 4
+        }
       }
     ]
   },

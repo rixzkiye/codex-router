@@ -29,6 +29,9 @@ The core invariant is: logical agent identity is durable, execution context is r
 - A hash-pinned LiteLLM translation closure, generated no-retry/no-fallback/no-cache configuration, independent edge-to-translator capability, and an actual-proxy hosted CI boot probe.
 - Model-scoped compatibility profiles for DeepSeek, Kimi, Qwen, GLM, Gemini, Anthropic, MiniMax, Grok, Ollama, and strict tool-history repair, with transformation categories recorded instead of prompt bodies.
 - Durable platform operations, append-before-project platform events, provider/catalog/model projections, sanitized request timing, provider usage, quota-header freshness, and generated-artifact manifests.
+- Official CLI-owned login/logout readback for native Codex, Kimi, Grok, and Command Code boundaries; signed router compaction envelopes; bounded tool-result aging; namespace-safe tool relay; and a governed, deduplicating vision bridge.
+- Local Ollama discovery, explicit-consent download/removal, measured tool-call validation, selection, cancellation, and restart reconciliation.
+- Transactional current-user install planning, apply/update, rollback, disable, and manifest-owned uninstall across Linux, macOS, and Windows service-definition formats.
 - Clean/unclean checkpoints, explicit cross-runtime hydration, policy-gated quota handoff, and no blind prompt replay.
 - Versioned compact results that separate worker-reported claims from observed worktree and command evidence.
 - Early recursive credential redaction and authority checks on pending approval responses.
@@ -105,9 +108,38 @@ node dist/index.js platform providers --config ./codex-router.config.json
 node dist/index.js platform doctor --config ./codex-router.config.json
 node dist/index.js platform artifacts --output ./data/generated --config ./codex-router.config.json
 node dist/index.js platform support-bundle --output ./data/support-$(date +%s).json --config ./codex-router.config.json
+node dist/index.js platform provider native-codex validate --config ./codex-router.config.json
+node dist/index.js platform provider native-codex login --codex-home /secure/codex-home --config ./codex-router.config.json
+node dist/index.js platform local discover --config ./codex-router.config.json
+node dist/index.js platform local download qwen3-coder:30b --yes --config ./codex-router.config.json
 ```
 
 Provider and model mutations are version-checked, idempotent, audited, and read back before completion. Support bundles are created locally with mode `0600`, list their safe projections, exclude credential references and request content, and are never uploaded automatically.
+
+Managed installation is deliberately two-step. Planning is read-only; material actions require `--yes` and refuse filesystem roots or the user home directory:
+
+```bash
+node dist/index.js platform install plan \
+  --root /absolute/dedicated/state \
+  --version 0.2.0 \
+  --release-source /absolute/released-artifact \
+  --entrypoint dist/index.js \
+  --config /absolute/codex-router.config.json
+
+node dist/index.js platform install apply \
+  --root /absolute/dedicated/state \
+  --version 0.2.0 \
+  --release-source /absolute/released-artifact \
+  --entrypoint dist/index.js \
+  --config /absolute/codex-router.config.json \
+  --yes
+
+node dist/index.js platform install rollback --manifest /absolute/dedicated/state/install-manifest.json --yes
+node dist/index.js platform install disable --manifest /absolute/dedicated/state/install-manifest.json --yes
+node dist/index.js platform install uninstall --manifest /absolute/dedicated/state/install-manifest.json --yes
+```
+
+The Console exposes the same application authority under **Diagnostics → Managed installation**, including exact paths, consent, durable operation state, cancellation, and independent manifest readback.
 
 Set every referenced runtime environment variable in the router process, for example:
 
@@ -167,12 +199,15 @@ Configure `inference` with an `env:` caller token reference, provider endpoints,
 export CODEX_ROUTER_INFERENCE_TOKEN="$(openssl rand -hex 32)"
 export CODEX_ROUTER_EXAMPLE_PROVIDER_KEY="provider credential"
 export CODEX_ROUTER_LITELLM_TOKEN="$(openssl rand -hex 32)"
+export CODEX_ROUTER_COMPACTION_KEY="$(openssl rand -hex 32)"
 node dist/index.js inference --config ./codex-router.config.json
 ```
 
 The command prints a loopback base URL such as `http://127.0.0.1:4202/v1`. Clients authenticate to it with the caller token. The gateway authenticates before reading model traffic, strips caller and Codex identity headers, removes `client_metadata`, rewrites only the configured model ID, and injects only the selected provider credential. `GET /health` is credential-free and contains counts only; `GET /v1/models`, `POST /v1/responses`, and `POST /v1/responses/compact` require caller authentication.
 
 Each request has exactly one selected provider. The gateway stages a bounded SSE preflight, records the first semantic boundary, rejects a provably empty completion before commitment, and never replays or fails over after semantic output. This preserves the router's no-replay boundary and keeps continuation/provider affinity an explicit control-plane decision.
+
+`compaction.integrityKeyRef` enables router-owned signed compaction envelopes for external routes. `toolResultAging` is opt-in and preserves recent or error-bearing tool results. `visionBridge` is disabled by default; enabling it requires explicit engine model IDs and never changes the upstream model's native modality claim. Local model downloads and deletions are separate consented operations and selection requires a measured tool call.
 
 Compressed JSON requests support bounded gzip, deflate, and Brotli decoding. Zstandard is accepted only when the running Node build exposes a bounded decoder; otherwise the edge returns a truthful `unsupported_content_encoding` response.
 
@@ -203,6 +238,8 @@ The suite covers state/idempotency behavior, sparse quotas, event deduplication,
 `pnpm verify` also verifies that the LiteLLM direct pins exist in the universal hash lock. Hosted `litellm.yml` separately installs the complete closure with `--require-hashes`, starts the real proxy, and probes `/health/liveliness`; this is not inferred from lock resolution.
 
 Live credential-backed App Server and provider tests are intentionally operator-run because credentials never enter repository fixtures.
+
+Passing `pnpm verify` establishes local implementation evidence only. General Availability additionally requires exact-head hosted CI, independent security and WCAG/visual review, package/provenance inspection, live provider/model compatibility, and released-artifact install/update/rollback proof on every supported host. See [Capability adoption ledger](docs/CAPABILITY_LEDGER.md).
 
 ## Contributing and security
 

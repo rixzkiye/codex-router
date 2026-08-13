@@ -30,7 +30,11 @@
     "dist",
     "requirements",
     "docs",
-    "README.md"
+    "README.md",
+    "PLATFORM_PRD.md",
+    "PRD.md",
+    "WEB_UI_PRD.md",
+    "codex-router.config.example.json"
   ],
   "engines": {
     "node": ">=22.13.0"
