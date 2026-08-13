@@ -13,10 +13,15 @@ import {
   agentWaitRequestSchema
 } from "./domain.js";
 import { asRouterError } from "./errors.js";
-import type { CodexRouter } from "./router.js";
+import type { RouterApplicationService } from "./application.js";
 import type { SecretRedactor } from "./security.js";
 
-export function createMcpServer(router: CodexRouter, redactor: SecretRedactor): McpServer {
+type ApplicationCommands = Pick<
+  RouterApplicationService,
+  "start" | "status" | "list" | "wait" | "steer" | "continue" | "cancel" | "handoff" | "result" | "respond" | "diagnostics"
+>;
+
+export function createMcpServer(router: ApplicationCommands, redactor: SecretRedactor): McpServer {
   const server = new McpServer({ name: "codex-router", version: "0.1.0" });
   const callerScope = process.env.CODEX_ROUTER_CALLER_SCOPE ?? "local:stdio";
 

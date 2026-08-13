@@ -814,6 +814,17 @@ export class Registry {
     return mapInteraction(row);
   }
 
+  listInteractions(state?: PendingInteraction["state"]): PendingInteraction[] {
+    const rows = state
+      ? (this.#db
+          .prepare("SELECT * FROM pending_interactions WHERE state = ? ORDER BY created_at DESC")
+          .all(state) as Row[])
+      : (this.#db
+          .prepare("SELECT * FROM pending_interactions ORDER BY created_at DESC")
+          .all() as Row[]);
+    return rows.map(mapInteraction);
+  }
+
   resolveInteraction(interactionId: string, response: unknown): void {
     const interaction = this.getPendingInteraction(interactionId);
     const agent = this.getAgent(interaction.agentId);
@@ -854,16 +865,86 @@ export class Registry {
   getEvents(agentId: string, limit = 100): Array<Record<string, unknown>> {
     return (this.#db
       .prepare("SELECT * FROM event_journal WHERE agent_id = ? ORDER BY sequence DESC LIMIT ?")
-      .all(agentId, limit) as Row[]).map((row) => ({
-      sequence: Number(row.sequence),
-      eventId: row.event_id,
-      type: row.event_type,
-      runtimeId: row.runtime_id,
-      incarnationId: row.incarnation_id,
-      threadId: row.thread_id,
-      turnId: row.turn_id,
-      payload: parseJson(row.payload_json),
-      occurredAt: row.occurred_at
+      .all(agentId, limit) as Row[]).map(mapEvent);
+  }
+
+  listEvents(input: {
+    agentId?: string;
+    runtimeId?: string;
+    eventType?: string;
+    beforeSequence?: number;
+    limit?: number;
+  } = {}): Array<Record<string, unknown>> {
+    const clauses: string[] = [];
+    const values: Array<string | number> = [];
+    if (input.agentId) {
+      clauses.push("agent_id = ?");
+      values.push(input.agentId);
+    }
+    if (input.runtimeId) {
+      clauses.push("runtime_id = ?");
+      values.push(input.runtimeId);
+    }
+    if (input.eventType) {
+      clauses.push("event_type = ?");
+      values.push(input.eventType);
+    }
+    if (input.beforeSequence !== undefined) {
+      clauses.push("sequence < ?");
+      values.push(input.beforeSequence);
+    }
+    const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    return (this.#db
+      .prepare(`SELECT * FROM event_journal ${where} ORDER BY sequence DESC LIMIT ?`)
+      .all(...values, limit) as Row[]).map(mapEvent);
+  }
+
+  listResults(agentId: string): AgentResult[] {
+    return (this.#db
+      .prepare("SELECT payload_json FROM results WHERE agent_id = ? ORDER BY version DESC")
+      .all(agentId) as Row[]).map((row) => parseJson<AgentResult>(row.payload_json));
+  }
+
+  listRoutingDecisions(agentId: string): Array<{ decision: RoutingDecision; createdAt: string }> {
+    return (this.#db
+      .prepare("SELECT decision_json, created_at FROM routing_decisions WHERE agent_id = ? ORDER BY id DESC")
+      .all(agentId) as Row[]).map((row) => ({
+      decision: parseJson<RoutingDecision>(row.decision_json),
+      createdAt: String(row.created_at)
+    }));
+  }
+
+  listWorktrees(): Array<Record<string, unknown>> {
+    const rows = this.#db
+      .prepare(
+        `SELECT w.*, l.agent_id lease_agent_id, l.incarnation_id lease_incarnation_id,
+                l.fencing_token lease_fencing_token, l.expires_at lease_expires_at,
+                l.acquired_at lease_acquired_at, l.updated_at lease_updated_at
+         FROM worktrees w
+         LEFT JOIN worktree_leases l ON l.canonical_path = w.canonical_path
+         ORDER BY w.updated_at DESC`
+      )
+      .all() as Row[];
+    return rows.map((row) => ({
+      canonicalPath: String(row.canonical_path),
+      repositoryId: row.repository_id ? String(row.repository_id) : null,
+      headSha: row.head_sha ? String(row.head_sha) : null,
+      baseSha: row.base_sha ? String(row.base_sha) : null,
+      dirtyAtRegistration: Boolean(row.dirty_at_registration),
+      registrationStatus: String(row.registration_status),
+      fencingCounter: Number(row.fencing_counter),
+      updatedAt: String(row.updated_at),
+      lease: row.lease_agent_id
+        ? {
+            agentId: String(row.lease_agent_id),
+            incarnationId: String(row.lease_incarnation_id),
+            fencingToken: Number(row.lease_fencing_token),
+            expiresAt: String(row.lease_expires_at),
+            acquiredAt: String(row.lease_acquired_at),
+            updatedAt: String(row.lease_updated_at)
+          }
+        : null
     }));
   }
 
@@ -1102,6 +1183,21 @@ function mapInteraction(row: Row): PendingInteraction {
     state: row.state as PendingInteraction["state"],
     createdAt: String(row.created_at),
     resolvedAt: nullableString(row.resolved_at)
+  };
+}
+
+function mapEvent(row: Row): Record<string, unknown> {
+  return {
+    sequence: Number(row.sequence),
+    eventId: String(row.event_id),
+    type: String(row.event_type),
+    runtimeId: nullableString(row.runtime_id),
+    agentId: nullableString(row.agent_id),
+    incarnationId: nullableString(row.incarnation_id),
+    threadId: nullableString(row.thread_id),
+    turnId: nullableString(row.turn_id),
+    payload: parseJson(row.payload_json),
+    occurredAt: String(row.occurred_at)
   };
 }
 
