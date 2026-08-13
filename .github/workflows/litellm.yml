@@ -1,0 +1,53 @@
+name: LiteLLM runtime
+
+on:
+  pull_request:
+    paths:
+      - "requirements/**"
+      - "src/platform/**"
+      - "src/inference/**"
+      - "tests/fixtures/litellm-ci.yaml"
+      - ".github/workflows/litellm.yml"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  actual-proxy:
+    name: Hash-locked proxy boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python
+        uses: actions/setup-python@a14c6be7515a7c7d9ac12f18c01a7b7682a4b66d # v6.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements/litellm.txt
+      - name: Install complete hash-locked closure
+        run: python -m pip install --require-hashes --only-binary=:all: -r requirements/litellm.txt
+      - name: Start actual LiteLLM proxy
+        env:
+          LITELLM_MASTER_KEY: ci-only-capability-not-a-production-secret
+        run: |
+          litellm --config tests/fixtures/litellm-ci.yaml --host 127.0.0.1 --port 4010 >litellm.log 2>&1 &
+          echo $! >litellm.pid
+      - name: Probe liveliness
+        env:
+          LITELLM_MASTER_KEY: ci-only-capability-not-a-production-secret
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error -H "Authorization: Bearer $LITELLM_MASTER_KEY" http://127.0.0.1:4010/health/liveliness; then
+              exit 0
+            fi
+            sleep 1
+          done
+          sed -n '1,240p' litellm.log
+          exit 1
+      - name: Stop proxy
+        if: always()
+        run: test ! -f litellm.pid || kill "$(cat litellm.pid)" || true
