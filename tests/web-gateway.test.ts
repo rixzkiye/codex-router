@@ -105,9 +105,20 @@ describe("Web Console gateway", () => {
 
     const { cookie } = await authenticate(harness.gateway);
     const bootstrap = await fetch(`${harness.gateway.url}/api/v1/bootstrap`, { headers: { Cookie: cookie } });
-    const snapshot = await bootstrap.json() as { csrfToken: string; router: { registryVersion: number }; runtimes: unknown[] };
+    const snapshot = await bootstrap.json() as {
+      csrfToken: string;
+      router: { registryVersion: number };
+      runtimes: unknown[];
+      platform: { providers: Array<{ credential?: unknown; authBoundary: { mechanism: string; references: string[] } }> };
+    };
     expect(bootstrap.headers.get("cache-control")).toBe("no-store");
     expect(snapshot.runtimes).toHaveLength(1);
+    expect(snapshot.platform.providers[0]?.credential).toBeUndefined();
+    expect(snapshot.platform.providers[0]?.authBoundary).toMatchObject({
+      mechanism: expect.any(String),
+      references: expect.any(Array)
+    });
+    expect(JSON.stringify(snapshot.platform.providers)).not.toContain("[REDACTED]");
 
     const controller = new AbortController();
     const stream = await fetch(`${harness.gateway.url}/api/v1/stream?afterVersion=0`, {

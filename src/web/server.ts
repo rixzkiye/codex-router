@@ -4,7 +4,7 @@ import { stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import { once } from "node:events";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
 import {
   agentCancelRequestSchema,
   agentContinueRequestSchema,
@@ -18,6 +18,10 @@ import type { RouterApplicationService } from "../application.js";
 import { newId, type Logger, type SecretRedactor } from "../security.js";
 
 const MAX_BODY_BYTES = 256 * 1024;
+const platformMutationSchema = z.object({
+  idempotencyKey: z.string().min(8).max(200),
+  expectedVersion: z.number().int().positive()
+});
 const SESSION_COOKIE = "codex_router_session";
 const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   "Content-Security-Policy":
@@ -277,6 +281,39 @@ async function handleApi(
     sendJson(response, 200, { runtimes: application.runtimes() });
     return;
   }
+  if (method === "GET" && pathName === "/api/v1/providers") {
+    sendJson(response, 200, { providers: application.providers() });
+    return;
+  }
+  const providerMatch = pathName.match(/^\/api\/v1\/providers\/([^/]+)(?:\/(.*))?$/);
+  if (providerMatch) {
+    const providerId = decodeURIComponent(providerMatch[1]!);
+    const child = providerMatch[2] ?? "";
+    if (method === "GET" && child === "") {
+      sendJson(response, 200, application.provider(providerId));
+      return;
+    }
+    if (method === "POST" && child === "validate") {
+      sendJson(response, 202, application.validateProvider(callerScope, providerId, platformMutationSchema.parse(await readJson(request))));
+      return;
+    }
+    if (method === "POST" && child === "discover") {
+      sendJson(response, 202, application.refreshProviderCatalog(callerScope, providerId, platformMutationSchema.parse(await readJson(request))));
+      return;
+    }
+    if (method === "POST" && (child === "enable" || child === "disable")) {
+      sendJson(
+        response,
+        202,
+        application.setProviderEnabled(callerScope, providerId, child === "enable", platformMutationSchema.parse(await readJson(request)))
+      );
+      return;
+    }
+  }
+  if (method === "GET" && pathName === "/api/v1/accounts") {
+    sendJson(response, 200, { accounts: application.accounts() });
+    return;
+  }
   const runtimeMatch = pathName.match(/^\/api\/v1\/runtimes\/([^/]+)(?:\/(.*))?$/);
   if (runtimeMatch) {
     const runtimeId = decodeURIComponent(runtimeMatch[1]!);
@@ -301,7 +338,45 @@ async function handleApi(
     }
   }
   if (method === "GET" && pathName === "/api/v1/models") {
-    sendJson(response, 200, { runtimes: application.models() });
+    sendJson(response, 200, { models: application.modelsPlatform(), runtimes: application.models() });
+    return;
+  }
+  const modelMatch = pathName.match(/^\/api\/v1\/models\/([^/]+)(?:\/(.*))?$/);
+  if (modelMatch) {
+    const modelId = decodeURIComponent(modelMatch[1]!);
+    const child = modelMatch[2] ?? "";
+    if (method === "GET" && child === "") {
+      sendJson(response, 200, application.modelPlatform(modelId));
+      return;
+    }
+    if (method === "POST" && (child === "enable" || child === "disable")) {
+      sendJson(
+        response,
+        202,
+        application.setModelEnabled(callerScope, modelId, child === "enable", platformMutationSchema.parse(await readJson(request)))
+      );
+      return;
+    }
+    if (method === "POST" && child === "compatibility/mock") {
+      sendJson(response, 202, application.runMockCompatibility(callerScope, modelId, platformMutationSchema.parse(await readJson(request))));
+      return;
+    }
+  }
+  if (method === "GET" && pathName === "/api/v1/requests") {
+    sendJson(response, 200, { requests: application.inferenceRequests(parseInteger(url.searchParams.get("limit"), 100)) });
+    return;
+  }
+  if (method === "GET" && pathName === "/api/v1/usage") {
+    sendJson(response, 200, application.usage());
+    return;
+  }
+  if (method === "GET" && pathName === "/api/v1/operations") {
+    sendJson(response, 200, { operations: application.operations(parseInteger(url.searchParams.get("limit"), 100)) });
+    return;
+  }
+  const operationMatch = pathName.match(/^\/api\/v1\/operations\/([^/]+)$/);
+  if (method === "GET" && operationMatch) {
+    sendJson(response, 200, application.operation(decodeURIComponent(operationMatch[1]!)));
     return;
   }
   if (method === "GET" && pathName === "/api/v1/worktrees") {
@@ -323,7 +398,7 @@ async function handleApi(
     return;
   }
   if (method === "GET" && pathName === "/api/v1/diagnostics") {
-    sendJson(response, 200, application.diagnostics());
+    sendJson(response, 200, { router: application.diagnostics(), platform: application.platformDiagnostics() });
     return;
   }
   if (method === "GET" && pathName === "/api/v1/config") {

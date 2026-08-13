@@ -11,10 +11,11 @@ import type {
   PendingInteraction
 } from "./domain.js";
 import { RouterError } from "./errors.js";
+import type { ProviderProjection } from "./platform/types.js";
 import type { CodexRouter } from "./router.js";
 import type { SecretRedactor } from "./security.js";
 
-export const WEB_SCHEMA_VERSION = 1;
+export const WEB_SCHEMA_VERSION = 2;
 export const ROUTER_VERSION = "0.1.0";
 
 export class RouterApplicationService {
@@ -72,6 +73,11 @@ export class RouterApplicationService {
     const runtimes = this.runtimes();
     const interactions = this.interactions("pending");
     const diagnostics = this.diagnostics();
+    const platformSnapshot = this.router.platform.snapshot();
+    const platform = {
+      ...platformSnapshot,
+      providers: platformSnapshot.providers.map(browserProviderProjection)
+    };
     return this.redactor.redact({
       schemaVersion: WEB_SCHEMA_VERSION,
       router: {
@@ -92,7 +98,8 @@ export class RouterApplicationService {
       agents: agents.slice(0, 100),
       runtimes,
       interactions,
-      diagnostics
+      diagnostics,
+      platform
     });
   }
 
@@ -216,6 +223,88 @@ export class RouterApplicationService {
     return this.redactor.redact(safeConfig(this.router.config));
   }
 
+  providers() {
+    return this.redactor.redact(this.router.platform.providers().map(browserProviderProjection));
+  }
+
+  provider(providerId: string) {
+    return this.redactor.redact(browserProviderProjection(this.router.platform.provider(providerId)));
+  }
+
+  modelsPlatform() {
+    return this.redactor.redact(this.router.platform.models());
+  }
+
+  modelPlatform(modelId: string) {
+    return this.redactor.redact(this.router.platform.model(modelId));
+  }
+
+  accounts() {
+    return this.redactor.redact(this.router.platform.accounts());
+  }
+
+  operations(limit = 100) {
+    return this.redactor.redact(this.router.platform.operations(limit));
+  }
+
+  operation(operationId: string) {
+    return this.redactor.redact(this.router.platform.operation(operationId));
+  }
+
+  inferenceRequests(limit = 100) {
+    return this.redactor.redact(this.router.platform.requests(limit));
+  }
+
+  usage() {
+    return this.redactor.redact(this.router.platform.usage());
+  }
+
+  platformDiagnostics() {
+    return this.redactor.redact(this.router.platform.doctor());
+  }
+
+  setProviderEnabled(
+    actor: string,
+    providerId: string,
+    enabled: boolean,
+    input: { idempotencyKey: string; expectedVersion: number }
+  ) {
+    return this.redactor.redact(this.router.platform.setProviderEnabled(actor, providerId, enabled, input));
+  }
+
+  validateProvider(
+    actor: string,
+    providerId: string,
+    input: { idempotencyKey: string; expectedVersion: number }
+  ) {
+    return this.redactor.redact(this.router.platform.validateProvider(actor, providerId, input));
+  }
+
+  refreshProviderCatalog(
+    actor: string,
+    providerId: string,
+    input: { idempotencyKey: string; expectedVersion: number }
+  ) {
+    return this.redactor.redact(this.router.platform.refreshProviderCatalog(actor, providerId, input));
+  }
+
+  setModelEnabled(
+    actor: string,
+    modelId: string,
+    enabled: boolean,
+    input: { idempotencyKey: string; expectedVersion: number }
+  ) {
+    return this.redactor.redact(this.router.platform.setModelEnabled(actor, modelId, enabled, input));
+  }
+
+  runMockCompatibility(
+    actor: string,
+    modelId: string,
+    input: { idempotencyKey: string; expectedVersion: number }
+  ) {
+    return this.redactor.redact(this.router.platform.runMockCompatibility(actor, modelId, input));
+  }
+
   async waitForVersion(afterVersion: number, timeoutMs: number) {
     return this.router.registry.waitForVersion(afterVersion, timeoutMs);
   }
@@ -319,6 +408,14 @@ function safeConfig(config: RouterConfig) {
           host: config.inference.host,
           port: config.inference.port,
           protocol: "openai_responses",
+          translation: config.inference.translation
+            ? {
+                configured: true,
+                baseUrl: config.inference.translation.baseUrl,
+                healthPath: config.inference.translation.healthPath,
+                capabilityReference: config.inference.translation.capabilityRef
+              }
+            : { configured: false },
           providers: config.inference.providers.map((provider) => ({ id: provider.id, keyless: provider.keyless })),
           models: config.inference.models.map((model) => ({ id: model.id, providerId: model.providerId }))
         }
@@ -351,6 +448,19 @@ function taskSummary(task: string): string {
 
 function isTerminal(status: AgentStatus): boolean {
   return status === "completed" || status === "failed" || status === "interrupted";
+}
+
+function browserProviderProjection(provider: ProviderProjection) {
+  const { credential, ...projection } = provider;
+  return {
+    ...projection,
+    authBoundary: {
+      mechanism: credential.mechanism,
+      references: credential.references,
+      sharedWith: credential.sharedWith ?? null,
+      interactiveTerminal: credential.interactiveTerminal
+    }
+  };
 }
 
 function countBy<T>(items: T[], key: (item: T) => string): Record<string, number> {
