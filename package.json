@@ -41,9 +41,14 @@
     ]
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "check": "tsc -p tsconfig.json --noEmit",
+    "build": "pnpm build:server && pnpm build:web",
+    "build:server": "tsc -p tsconfig.build.json",
+    "build:web": "vite build",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "dev": "tsx src/index.ts",
+    "dev:web": "vite",
+    "preview:web": "pnpm build && tsx tests/fixtures/web-console-fixture.ts",
+    "web": "pnpm build && node dist/index.js web --open",
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
@@ -51,16 +56,30 @@
     "verify": "pnpm check && pnpm test && pnpm build"
   },
   "dependencies": {
+    "@fontsource-variable/geist": "5.3.0",
+    "@fontsource-variable/geist-mono": "5.3.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "better-sqlite3": "12.6.2",
+    "lucide-react": "1.31.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.4",
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.10.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-react": "6.0.5",
     "@vitest/coverage-v8": "4.1.10",
+    "axe-core": "4.13.0",
+    "jsdom": "30.0.1",
     "tsx": "4.23.12",
     "typescript": "7.0.2",
+    "vite": "8.2.1",
     "vitest": "4.1.10"
   }
 }

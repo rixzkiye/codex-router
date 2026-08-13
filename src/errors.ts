@@ -1,4 +1,5 @@
 export type RouterErrorCode =
+  | "invalid_request"
   | "not_found"
   | "conflict"
   | "idempotency_conflict"

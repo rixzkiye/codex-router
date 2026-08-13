@@ -12,6 +12,8 @@
 | Execution backends | Codex App Server runtimes and external provider runtimes |
 | Primary orchestrator | Sol or another MCP-capable parent agent |
 
+Companion specification: [Codex Router Console Web UI PRD](WEB_UI_PRD.md).
+
 ## 1. Executive summary
 
 Codex Router is a durable control plane for starting, observing, steering, continuing, cancelling, and moving long-running coding agents across execution runtimes.
@@ -1518,7 +1520,7 @@ These choices do not change product semantics and may be resolved in technical d
 - Exact scheduler score weights.
 - Exact default quota thresholds for `draining` and `limited`.
 - Whether managed Git worktree creation enters v1 or a later release.
-- UI form factor beyond MCP and operator diagnostics.
+- Exact Web Console implementation stack; its product form factor and behavior are specified in [WEB_UI_PRD.md](WEB_UI_PRD.md).
 
 ## 31. Protocol validation baseline
 

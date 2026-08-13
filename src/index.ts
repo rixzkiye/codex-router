@@ -1,33 +1,75 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
+import path from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { RouterApplicationService } from "./application.js";
 import { loadConfig } from "./config.js";
 import { createMcpServer } from "./mcp.js";
 import { CodexRouter } from "./router.js";
 import { createJsonLogger, SecretRedactor } from "./security.js";
+import { startWebGateway } from "./web/server.js";
 
 async function main(): Promise<void> {
-  const configPath = parseConfigPath(process.argv.slice(2));
+  const args = process.argv.slice(2);
+  const configPath = parseConfigPath(args);
   const redactor = new SecretRedactor();
   const logger = createJsonLogger(redactor);
   const config = await loadConfig(configPath);
   const router = await CodexRouter.create(config, { logger, redactor });
-  const server = createMcpServer(router, redactor);
+  const application = new RouterApplicationService(router, redactor);
+  const webMode = args[0] === "web";
+  const server = webMode ? null : createMcpServer(application, redactor);
+  const gateway = webMode
+    ? await startWebGateway(application, redactor, logger, {
+        host: option(args, "--host") ?? "127.0.0.1",
+        port: numericOption(args, "--port") ?? 4178,
+        assetRoot: option(args, "--assets") ?? path.join(import.meta.dirname, "web")
+      })
+    : null;
   const shutdown = async () => {
-    await server.close().catch(() => undefined);
+    await server?.close().catch(() => undefined);
+    await gateway?.close().catch(() => undefined);
     await router.close();
   };
   process.once("SIGINT", () => void shutdown().finally(() => process.exit(0)));
   process.once("SIGTERM", () => void shutdown().finally(() => process.exit(0)));
   process.once("beforeExit", () => void router.close());
-  await server.connect(new StdioServerTransport());
+  if (gateway) {
+    process.stdout.write(`Codex Router Console: ${gateway.bootstrapUrl}\n`);
+    if (args.includes("--open")) openExternal(gateway.bootstrapUrl);
+    logger.info({ config_path: configPath, url: gateway.url }, "Codex Router Web Console started");
+    return;
+  }
+  await server!.connect(new StdioServerTransport());
   logger.info({ config_path: configPath }, "Codex Router MCP server started");
 }
 
 function parseConfigPath(args: string[]): string {
-  const index = args.indexOf("--config");
-  const explicit = index >= 0 ? args[index + 1] : undefined;
+  const explicit = option(args, "--config");
   if (explicit) return explicit;
   return process.env.CODEX_ROUTER_CONFIG ?? "codex-router.config.json";
+}
+
+function option(args: string[], name: string): string | undefined {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : undefined;
+}
+
+function numericOption(args: string[], name: string): number | undefined {
+  const value = option(args, name);
+  if (!value) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65_535) {
+    throw new Error(`${name} must be an integer between 0 and 65535`);
+  }
+  return parsed;
+}
+
+function openExternal(url: string): void {
+  const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  const child = spawn(command, args, { detached: true, stdio: "ignore" });
+  child.unref();
 }
 
 main().catch((error) => {

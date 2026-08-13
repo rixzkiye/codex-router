@@ -7,6 +7,11 @@ Codex Router is a durable MCP control plane for starting, observing, steering, c
 
 The core invariant is: logical agent identity is durable, execution context is replaceable, and the actual worktree plus observed evidence are authoritative.
 
+## Product specifications
+
+- [Core Router PRD](PRD.md) defines lifecycle, durability, routing, recovery, authority, and evidence semantics.
+- [Web Console PRD](WEB_UI_PRD.md) defines the complete operator UI, browser transport, interaction model, aesthetic system, accessibility, and release gates.
+
 ## What is implemented
 
 - The ten PRD lifecycle tools: `agent_start`, `agent_status`, `agent_list`, `agent_wait`, `agent_steer`, `agent_continue`, `agent_cancel`, `agent_handoff`, `agent_result`, and `agent_respond`.
@@ -21,6 +26,8 @@ The core invariant is: logical agent identity is durable, execution context is r
 - Clean/unclean checkpoints, explicit cross-runtime hydration, policy-gated quota handoff, and no blind prompt replay.
 - Versioned compact results that separate worker-reported claims from observed worktree and command evidence.
 - Early recursive credential redaction and authority checks on pending approval responses.
+- A responsive Web Console over the same router application service, with a resumable SSE projection, lifecycle controls, durable attention inbox, evidence views, runtime/worktree/event diagnostics, and an Emil-derived accessible design system.
+- A loopback-only Web gateway with one-time fragment bootstrap, HttpOnly SameSite session cookies, Origin/CSRF enforcement, strict CSP, bounded request bodies, and versioned redacted browser DTOs.
 
 ## Requirements
 
@@ -58,6 +65,27 @@ Register it in an MCP host as a stdio server. A representative command is:
   ]
 }
 ```
+
+### Web Console
+
+Build and open the local Console:
+
+```bash
+pnpm build
+node dist/index.js web --open --config ./codex-router.config.json
+```
+
+The built-in gateway binds to `127.0.0.1:4178` by default. `--open` places a short-lived one-time token in the URL fragment; the browser removes the fragment immediately and exchanges it for an HttpOnly, SameSite=Strict session cookie. Use `--port 0` for an ephemeral port or `--assets /absolute/path/to/dist/web` to override the static bundle location.
+
+The built-in gateway intentionally refuses non-loopback binding. Remote access requires an explicitly configured authenticated TLS reverse proxy or a production gateway with trusted identity and role mapping. Do not forward the local bootstrap URL or expose it through a public tunnel.
+
+For a representative local UI fixture without real credentials or provider calls:
+
+```bash
+pnpm preview:web
+```
+
+Model catalogs and account status remain runtime-authoritative. When an installed adapter does not expose those capabilities, the Console shows an explicit unavailable/unknown state and disables the related mutation instead of inventing a model list or authentication result.
 
 Set every referenced runtime environment variable in the router process, for example:
 
