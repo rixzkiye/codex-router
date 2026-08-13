@@ -7,6 +7,11 @@ Codex Router is a durable MCP control plane for starting, observing, steering, c
 
 The core invariant is: logical agent identity is durable, execution context is replaceable, and the actual worktree plus observed evidence are authoritative.
 
+## Product specifications
+
+- [Core Router PRD](PRD.md) defines lifecycle, durability, routing, recovery, authority, and evidence semantics.
+- [Web Console PRD](WEB_UI_PRD.md) defines the complete operator UI, browser transport, interaction model, aesthetic system, accessibility, and release gates.
+
 ## What is implemented
 
 - The ten PRD lifecycle tools: `agent_start`, `agent_status`, `agent_list`, `agent_wait`, `agent_steer`, `agent_continue`, `agent_cancel`, `agent_handoff`, `agent_result`, and `agent_respond`.
