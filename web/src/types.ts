@@ -187,7 +187,7 @@ export interface ProviderDto {
   publication: string;
   version: number;
   enabled: boolean;
-  authentication: { state: EvidenceState; source: string | null; reference: string | null; checkedAt: string | null };
+  authentication: { state: EvidenceState; source: string | null; reference: string | null; checkedAt: string | null; expiresAt?: string | null; message?: string };
   entitlement: { state: EvidenceState; message: string; checkedAt: string | null };
   health: { state: EvidenceState; message: string; checkedAt: string | null };
   catalog: { state: EvidenceState; modelCount: number; refreshedAt: string | null };
@@ -292,6 +292,52 @@ export interface DoctorCheckDto {
   repairable: boolean;
 }
 
+export interface LocalModelDto {
+  id: string;
+  runtimeId: string;
+  state: "discovered" | "downloading" | "installed" | "validated" | "failed" | "removing";
+  selected: boolean;
+  definition: {
+    sizeBytes: number | null;
+    digest: string | null;
+    modifiedAt: string | null;
+    capabilities: string[];
+    contextWindow: number | null;
+    details: Record<string, string>;
+  };
+  benchmark: {
+    completed: boolean;
+    durationMs: number;
+    outputTokens: number | null;
+    tokensPerSecond: number | null;
+    toolCallObserved: boolean;
+  } | null;
+  operationId: string | null;
+  version: number;
+  updatedAt: string;
+}
+
+export interface RoutingDecisionDto {
+  requestId: string;
+  policyVersion: string;
+  catalogVersion: string;
+  quotaSnapshotVersion: string | null;
+  selected: { providerId: string; accountRefId: string | null; modelId: string; score: number };
+  candidates: Array<{ providerId: string; accountRefId: string | null; modelId: string; eligible: boolean; score: number; reasons: string[] }>;
+  createdAt: string;
+}
+
+export interface PlatformEvidenceDto {
+  id: string;
+  capability: string;
+  category: string;
+  state: "pass" | "fail" | "blocked" | "unknown";
+  provenance: Record<string, unknown>;
+  observedAt: string;
+  expiresAt: string | null;
+  headSha: string | null;
+}
+
 export interface PlatformSnapshot {
   registry: {
     hash: string;
@@ -313,6 +359,7 @@ export interface PlatformSnapshot {
   requests: InferenceRequestDto[];
   usage: {
     provenance: string;
+    estimatedCostUsd: number | null;
     totals: Array<{
       providerId: string;
       modelId: string;
@@ -322,12 +369,18 @@ export interface PlatformSnapshot {
       cachedInputTokens: number | null;
       reasoningTokens: number | null;
       estimatedInputTokens: number | null;
+      estimatedCost: { amount: number; currency: "USD"; provenance: { source: string; version: string }; estimated: true } | null;
       updatedAt: string;
     }>;
   };
   operations: PlatformOperationDto[];
   diagnostics: DoctorCheckDto[];
-  localModels: ModelDto[];
+  localRuntime: { runtimeId: string; state: string; baseUrl: string; version: number; updatedAt: string | null; checkedAt?: string };
+  localModels: LocalModelDto[];
+  routingDecisions: RoutingDecisionDto[];
+  nativeCatalogs: Array<{ accountRefId: string; clientVersion: string; etag: string | null; hash: string; state: string; observedAt: string }>;
+  evidence: PlatformEvidenceDto[];
+  installState: { manifest: Record<string, unknown>; version: number; updatedAt: string } | null;
   capabilityLedger: Array<{
     id: string;
     capability: string;

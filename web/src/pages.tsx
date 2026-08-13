@@ -20,6 +20,7 @@ import {
   Server,
   Settings2,
   ShieldCheck,
+  Sparkles,
   SquareTerminal,
   TestTube2,
   UserRoundCheck,
@@ -378,9 +379,21 @@ export function SettingsPage({ api, data, navigate }: PageProps) {
   const section = window.location.pathname.split("/")[2] ?? "runtimes";
   const config = useResource("config", () => api.get<Record<string, unknown>>("/api/v1/config"));
   const sections = [
-    ["runtimes", "Runtime profiles", Server], ["models", "Models", Gauge], ["credentials", "Credentials", KeyRound], ["worktrees", "Allowed roots", FolderGit2], ["policies", "Policies", ShieldCheck], ["retention", "Retention", FileClock], ["diagnostics", "Diagnostics", SquareTerminal]
+    ["runtimes", "Runtime profiles", Server], ["models", "Models", Gauge], ["credentials", "Credentials", KeyRound], ["inference", "Inference policy", Sparkles], ["worktrees", "Allowed roots", FolderGit2], ["policies", "Policies", ShieldCheck], ["retention", "Retention", FileClock], ["diagnostics", "Diagnostics", SquareTerminal]
   ] as const;
-  return <Page title="Settings" eyebrow="Administration" description="Validated policy and secret references only; raw credential material never enters this surface."><div className="settings-layout"><nav className="settings-nav" aria-label="Settings sections">{sections.map(([id, label, Icon]) => <button key={id} aria-current={section === id ? "page" : undefined} onClick={() => navigate(`/settings/${id}`)}><Icon aria-hidden="true" />{label}</button>)}</nav><div className="settings-content">{section === "diagnostics" ? <DiagnosticsPanel data={data} /> : section === "models" ? <FleetModels data={data} navigate={navigate} /> : section === "credentials" ? <FleetCredentials data={data} navigate={navigate} /> : section === "runtimes" ? <RuntimeSettings data={data} navigate={navigate} /> : config.error ? <ErrorState error={config.error} retry={config.reload} /> : !config.value ? <LoadingRows /> : <ConfigPanel section={section} config={config.value} />}</div></div></Page>;
+  return <Page title="Settings" eyebrow="Administration" description="Validated policy and secret references only; raw credential material never enters this surface."><div className="settings-layout"><nav className="settings-nav" aria-label="Settings sections">{sections.map(([id, label, Icon]) => <button key={id} aria-current={section === id ? "page" : undefined} onClick={() => navigate(`/settings/${id}`)}><Icon aria-hidden="true" />{label}</button>)}</nav><div className="settings-content">{section === "diagnostics" ? <DiagnosticsPanel data={data} /> : section === "models" ? <FleetModels data={data} navigate={navigate} /> : section === "credentials" ? <FleetCredentials data={data} navigate={navigate} /> : section === "runtimes" ? <RuntimeSettings data={data} navigate={navigate} /> : section === "inference" ? <InferencePolicySettings api={api} /> : config.error ? <ErrorState error={config.error} retry={config.reload} /> : !config.value ? <LoadingRows /> : <ConfigPanel section={section} config={config.value} />}</div></div></Page>;
+}
+
+function InferencePolicySettings({ api }: { api: ConsoleApi }) {
+  const config = useResource("inference-config", () => api.get<Record<string, unknown>>("/api/v1/config"));
+  if (config.error) return <ErrorState error={config.error} retry={config.reload} />;
+  if (!config.value) return <LoadingRows />;
+  const inference = isRecord(config.value.inference) ? config.value.inference : {};
+  return <><Section title="Context and multimodal policy" description="Runtime readback. Persistent changes require the atomic settings operation rather than browser-local state."><div className="settings-policy-grid"><PolicyReadback title="Compaction" enabled={isRecord(inference.compaction)} detail={isRecord(inference.compaction) ? "Router-owned integrity envelope configured" : "Native-only or unavailable"} /><PolicyReadback title="Tool-result aging" enabled={isRecord(inference.toolResultAging) && inference.toolResultAging.enabled === true} detail={isRecord(inference.toolResultAging) ? `${String(inference.toolResultAging.preserveRecent ?? "?")} recent results preserved` : "Disabled"} /><PolicyReadback title="Vision bridge" enabled={isRecord(inference.visionBridge) && inference.visionBridge.enabled === true} detail={isRecord(inference.visionBridge) ? `${Array.isArray(inference.visionBridge.engineModelIds) ? inference.visionBridge.engineModelIds.length : 0} configured engines` : "Disabled"} /><PolicyReadback title="Local runtime" enabled={isRecord(inference.localModels)} detail={isRecord(inference.localModels) ? String(inference.localModels.baseUrl ?? "loopback") : "Unavailable"} /><PolicyReadback title="Routing policy" enabled={isRecord(inference.routingPolicy)} detail={isRecord(inference.routingPolicy) ? String(inference.routingPolicy.policyVersion ?? "unknown") : "Unavailable"} /></div><InlineNotice tone="info" title="Readback is authoritative">This page never applies a browser-only toggle. Edit through a managed configuration adapter or deployment workflow, then confirm the running projection here.</InlineNotice></Section><Section title="Privacy boundary" description="Content retention and credential rules are locked independently of feature enablement."><dl className="detail-list"><ReviewItem term="Prompt retention" value="Excluded by default" /><ReviewItem term="Hidden reasoning" value="Never retained" /><ReviewItem term="Vision transcripts" value="Bounded evidence; not support-bundle content" /><ReviewItem term="Credentials" value="References only" /><ReviewItem term="Fallback" value="Explicit and pre-semantic only" /></dl></Section></>;
+}
+
+function PolicyReadback({ title, enabled, detail }: { title: string; enabled: boolean; detail: string }) {
+  return <article><span className={`policy-readback__dot ${enabled ? "policy-readback__dot--on" : ""}`} aria-hidden="true" /><div><strong>{title}</strong><small>{detail}</small></div><span>{enabled ? "configured" : "off"}</span></article>;
 }
 
 function ActivityTab({ events }: { events: RouterEvent[] }) {
@@ -538,6 +551,10 @@ function useResource<T>(key: string, loader: () => Promise<T>) {
 function errorMessage(error: unknown): string {
   if (error instanceof ConsoleApiError) return `${error.message} (${error.payload.code}; operation ${error.payload.operationId})`;
   return error instanceof Error ? error.message : "Unknown Console error";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function eventConsequence(event: RouterEvent): string {
