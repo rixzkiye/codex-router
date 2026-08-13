@@ -123,6 +123,49 @@ export const inferenceTranslationConfigSchema = z
     }
   });
 
+const compactionConfigSchema = z.object({
+  integrityKeyRef: secretReferenceSchema,
+  maxEnvelopeBytes: z.number().int().positive().max(2 * 1024 * 1024).default(512 * 1024),
+  maxSummaryBytes: z.number().int().positive().max(1024 * 1024).default(256 * 1024)
+});
+
+const toolResultAgingConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  preserveRecent: z.number().int().min(1).max(100).default(8),
+  minimumBytes: z.number().int().min(1024).max(16 * 1024 * 1024).default(64 * 1024),
+  headBytes: z.number().int().min(128).max(16 * 1024).default(2 * 1024),
+  tailBytes: z.number().int().min(128).max(16 * 1024).default(2 * 1024)
+});
+
+const visionBridgeConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  engineModelIds: z.array(z.string().min(1)).default([]),
+  fallback: z.boolean().default(false),
+  maxDataUrlBytes: z.number().int().positive().max(32 * 1024 * 1024).default(8 * 1024 * 1024),
+  allowedRemoteHosts: z.array(z.string().regex(/^[a-z0-9.-]+$/i)).default([]),
+  cacheEntries: z.number().int().min(0).max(1_000).default(64)
+});
+
+const localModelsConfigSchema = z.object({
+  baseUrl: z.url().default("http://127.0.0.1:11434")
+}).superRefine((local, context) => {
+  const url = new URL(local.baseUrl);
+  if (url.protocol !== "http:" || !["127.0.0.1", "::1", "localhost"].includes(url.hostname) || url.username || url.password || url.search || url.hash) {
+    context.addIssue({ code: "custom", path: ["baseUrl"], message: "Local models require an uncredentialed loopback HTTP endpoint" });
+  }
+});
+
+const routingPolicyConfigSchema = z.object({
+  limitedThreshold: z.number().min(0).max(1).default(0.2),
+  criticalThreshold: z.number().min(0).max(1).default(0.05),
+  recoveryMargin: z.number().min(0).max(0.5).default(0.05),
+  policyVersion: z.string().min(1).default("routing/v1")
+}).superRefine((policy, context) => {
+  if (policy.criticalThreshold > policy.limitedThreshold) {
+    context.addIssue({ code: "custom", path: ["criticalThreshold"], message: "Critical quota threshold cannot exceed limited threshold" });
+  }
+});
+
 export const inferenceConfigSchema = z
   .object({
     callerTokenRef: secretReferenceSchema,
@@ -133,6 +176,11 @@ export const inferenceConfigSchema = z
     preflightBytes: z.number().int().positive().max(1024 * 1024).default(64 * 1024),
     preflightTimeoutMs: z.number().int().positive().max(30_000).default(2_000),
     translation: inferenceTranslationConfigSchema.optional(),
+    compaction: compactionConfigSchema.optional(),
+    toolResultAging: toolResultAgingConfigSchema.default({ enabled: false, preserveRecent: 8, minimumBytes: 64 * 1024, headBytes: 2 * 1024, tailBytes: 2 * 1024 }),
+    visionBridge: visionBridgeConfigSchema.default({ enabled: false, engineModelIds: [], fallback: false, maxDataUrlBytes: 8 * 1024 * 1024, allowedRemoteHosts: [], cacheEntries: 64 }),
+    localModels: localModelsConfigSchema.default({ baseUrl: "http://127.0.0.1:11434" }),
+    routingPolicy: routingPolicyConfigSchema.default({ limitedThreshold: 0.2, criticalThreshold: 0.05, recoveryMargin: 0.05, policyVersion: "routing/v1" }),
     providers: z.array(inferenceProviderConfigSchema).min(1),
     models: z.array(inferenceModelConfigSchema).min(1)
   })
@@ -165,6 +213,14 @@ export const inferenceConfigSchema = z
           message: `Unknown inference provider: ${model.providerId}`
         });
       }
+    }
+    for (const [index, engine] of inference.visionBridge.engineModelIds.entries()) {
+      if (!modelIds.has(engine)) {
+        context.addIssue({ code: "custom", path: ["visionBridge", "engineModelIds", index], message: `Unknown vision engine model: ${engine}` });
+      }
+    }
+    if (inference.visionBridge.enabled && inference.visionBridge.engineModelIds.length === 0) {
+      context.addIssue({ code: "custom", path: ["visionBridge", "engineModelIds"], message: "An enabled vision bridge requires at least one engine model" });
     }
   });
 

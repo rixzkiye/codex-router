@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 export class RouterDatabase {
   readonly connection: Database.Database;
@@ -270,6 +270,65 @@ export class RouterDatabase {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS platform_operation_locks (
+        scope TEXT PRIMARY KEY,
+        operation_id TEXT NOT NULL REFERENCES platform_operations(id) ON DELETE CASCADE,
+        fencing_token INTEGER NOT NULL,
+        expires_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS platform_local_models (
+        id TEXT PRIMARY KEY,
+        runtime_id TEXT NOT NULL,
+        state TEXT NOT NULL,
+        selected INTEGER NOT NULL DEFAULT 0,
+        definition_json TEXT NOT NULL,
+        benchmark_json TEXT,
+        operation_id TEXT REFERENCES platform_operations(id) ON DELETE SET NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS platform_routing_decisions (
+        request_id TEXT PRIMARY KEY REFERENCES inference_requests(id) ON DELETE CASCADE,
+        policy_version TEXT NOT NULL,
+        catalog_version TEXT NOT NULL,
+        quota_snapshot_version TEXT,
+        selected_json TEXT NOT NULL,
+        candidates_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS platform_evidence (
+        id TEXT PRIMARY KEY,
+        capability TEXT NOT NULL,
+        category TEXT NOT NULL,
+        state TEXT NOT NULL,
+        provenance_json TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        expires_at TEXT,
+        head_sha TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS platform_native_catalogs (
+        account_ref_id TEXT NOT NULL,
+        client_version TEXT NOT NULL,
+        etag TEXT,
+        catalog_json TEXT NOT NULL,
+        catalog_hash TEXT NOT NULL,
+        state TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        PRIMARY KEY(account_ref_id, client_version)
+      );
+
+      CREATE TABLE IF NOT EXISTS platform_install_state (
+        id TEXT PRIMARY KEY CHECK(id = 'current'),
+        manifest_json TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS agents_status_idx ON agents(status, updated_at);
       CREATE INDEX IF NOT EXISTS agents_project_idx ON agents(project_key, updated_at);
       CREATE INDEX IF NOT EXISTS incarnations_agent_idx ON incarnations(agent_id, created_at);
@@ -282,6 +341,8 @@ export class RouterDatabase {
       CREATE INDEX IF NOT EXISTS inference_requests_started_idx ON inference_requests(started_at DESC);
       CREATE INDEX IF NOT EXISTS inference_requests_provider_idx ON inference_requests(provider_id, started_at DESC);
       CREATE INDEX IF NOT EXISTS platform_usage_provider_idx ON platform_usage_events(provider_id, observed_at DESC);
+      CREATE INDEX IF NOT EXISTS platform_local_models_state_idx ON platform_local_models(state, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS platform_evidence_capability_idx ON platform_evidence(capability, observed_at DESC);
     `);
 
     const current = Number(
