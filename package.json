@@ -1,5 +1,5 @@
 {
-  "name": "@rixzkiye/codex-router",
+  "name": "@rizkiye/codex-router",
   "version": "0.2.0",
   "description": "Durable MCP control plane for long-running Codex agents",
   "license": "MIT",

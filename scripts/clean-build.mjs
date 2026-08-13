@@ -3,7 +3,7 @@ import path from "node:path";
 
 const repositoryRoot = process.cwd();
 const manifest = JSON.parse(await readFile(path.join(repositoryRoot, "package.json"), "utf8"));
-if (manifest.name !== "@rixzkiye/codex-router") {
+if (manifest.name !== "@rizkiye/codex-router") {
   throw new Error("Refusing to clean build output outside the Codex Router package root");
 }
 

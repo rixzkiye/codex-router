@@ -122,7 +122,7 @@ function cliHarness(existing: SetupManifest | null, options: { serviceRunning?: 
 
 function manifest(overrides: Partial<SetupManifest> = {}): SetupManifest {
   return {
-    owner: "@rixzkiye/codex-router",
+    owner: "@rizkiye/codex-router",
     version: 1,
     packageVersion: "0.2.0",
     configPath: "/config/config.json",
