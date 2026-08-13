@@ -29,7 +29,9 @@ jobs:
           cache: pip
           cache-dependency-path: requirements/litellm.txt
       - name: Install complete hash-locked closure
-        run: python -m pip install --require-hashes --only-binary=:all: -r requirements/litellm.txt
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all:
+          -r requirements/litellm.txt
       - name: Start actual LiteLLM proxy
         env:
           LITELLM_MASTER_KEY: ci-only-capability-not-a-production-secret
