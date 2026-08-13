@@ -12,6 +12,7 @@ import {
   FileSearch,
   Gauge,
   HardDrive,
+  Laptop,
   KeyRound,
   LogOut,
   Network,
@@ -34,6 +35,7 @@ import type {
   InferenceRequestDto,
   LocalModelDto,
   ModelDto,
+  ManagedSetupStatusDto,
   PlatformOperationDto,
   ProviderDto
 } from "./types";
@@ -316,6 +318,9 @@ export function PlatformDiagnosticsPage({ api, data, connection, refresh }: Page
   const [consent, setConsent] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [management, setManagement] = useState<ManagedSetupStatusDto | null>(null);
+  const [managementUnavailable, setManagementUnavailable] = useState(false);
+  const [managementPending, setManagementPending] = useState<string | null>(null);
   const expectedVersion = data.platform.installState?.version ?? 1;
   const targetComplete = Object.values(target).every((value) => value.trim());
   const manifestFile = manifestFileDraft ?? String(installedManifest?.manifestFile ?? "");
@@ -344,10 +349,58 @@ export function PlatformDiagnosticsPage({ api, data, connection, refresh }: Page
     } catch (caught) { setError(errorMessage(caught)); } finally { setPending(null); }
   };
   const updateTarget = (key: keyof typeof target, value: string) => setTarget((current) => ({ ...current, [key]: value }));
+  const loadManagement = async () => {
+    try {
+      setManagement(await api.get<ManagedSetupStatusDto>("/api/v1/management"));
+      setManagementUnavailable(false);
+    } catch (caught) {
+      if (caught instanceof ConsoleApiError && caught.payload.code === "unsupported") {
+        setManagementUnavailable(true);
+      } else {
+        setManagementUnavailable(false);
+        setError(errorMessage(caught));
+      }
+    }
+  };
+  useEffect(() => { void loadManagement(); }, []);
+  const controlService = async (action: "start" | "restart" | "stop" | "background", preference?: { enabled: boolean; startAtLogin: boolean }) => {
+    setManagementPending(action); setError(null);
+    try {
+      const result = await api.mutate<ManagedSetupStatusDto | { accepted: true }>(`/api/v1/management/${action}`, "POST", preference ?? {});
+      if ("configured" in result) setManagement(result);
+      else if (action === "background" && preference?.enabled) await loadManagement();
+    } catch (caught) { setError(errorMessage(caught)); } finally { setManagementPending(null); }
+  };
 
   return <PlatformPage title="Diagnostics" eyebrow="Read-only by default" description="Ownership, integrity, process health, and generated-artifact drift are independent checks.">
-    {error ? <InlineNotice tone="danger" title="Installation state unchanged">{error}</InlineNotice> : null}
+    {error ? <InlineNotice tone="danger" title="Managed state unchanged">{error}</InlineNotice> : null}
     <div className="diagnostic-grid">{checks.map((check) => <DiagnosticCard key={check.id} check={check} />)}</div>
+    {!managementUnavailable && management ? <Section title="Router service" description="The current-user service, login preference, MCP registration, and managed paths are read back independently.">
+      <div className="service-console">
+        <div className="service-console__summary">
+          <span className="service-console__mark" aria-hidden="true"><Laptop /></span>
+          <div><span className="eyebrow">Current user</span><h3>Codex Router is {management.service.state}</h3><p>{management.service.message}</p></div>
+          <StatePill state={management.service.running ? "ready" : management.service.state === "attention" ? "degraded" : "unavailable"} label={management.service.state} />
+        </div>
+        <div className="service-console__controls" aria-label="Router service controls">
+          <Button variant="primary" onClick={() => window.location.assign(management.url)}>Open Console</Button>
+          {!management.service.running ? <Button variant="primary" pending={managementPending === "start"} disabled={connection !== "live"} onClick={() => void controlService("start")}><Activity aria-hidden="true" />Start service</Button> : null}
+          <Button pending={managementPending === "restart"} disabled={connection !== "live"} onClick={() => void controlService("restart")}><RefreshCcw aria-hidden="true" />Restart & reconnect</Button>
+          <Button variant="danger" pending={managementPending === "stop"} disabled={connection !== "live"} onClick={() => void controlService("stop")}><LogOut aria-hidden="true" />Stop & close Console</Button>
+        </div>
+        <div className="service-preferences">
+          <label><input type="checkbox" checked={management.background} disabled={managementPending !== null} onChange={(event) => void controlService("background", { enabled: event.target.checked, startAtLogin: event.target.checked ? management.startAtLogin : false })} /><span><strong>Run in background</strong><small>Turning this off stops the service after the response and disconnects this Console.</small></span></label>
+          <label><input type="checkbox" checked={management.startAtLogin} disabled={!management.background || managementPending !== null} onChange={(event) => void controlService("background", { enabled: true, startAtLogin: event.target.checked })} /><span><strong>Start at login</strong><small>Uses only the current user's native service manager.</small></span></label>
+        </div>
+        <dl className="detail-list detail-list--columns">
+          <Review term="Codex MCP" value={`${management.mcp.state} — ${management.mcp.message}`} />
+          <Review term="Config" value={management.paths.configFile} />
+          <Review term="Service" value={management.paths.serviceFile} />
+          <Review term="Manifest" value={management.paths.manifestFile} />
+          <Review term="Logs" value={management.paths.logFile} />
+        </dl>
+      </div>
+    </Section> : null}
     <Section title="Generation manifest" description="Catalog, route, and translator artifacts share one identity.">
       {data.platform.registry.manifest ? <dl className="detail-list detail-list--columns"><Review term="Registry hash" value={data.platform.registry.manifest.registryHash} /><Review term="Routes hash" value={data.platform.registry.manifest.routesHash} /><Review term="LiteLLM hash" value={data.platform.registry.manifest.litellmHash} /><Review term="Generated" value={data.platform.registry.manifest.generatedAt} /></dl> : <InlineNotice tone="info" title="Inference generation is not configured">Agent lifecycle remains available independently.</InlineNotice>}
     </Section>

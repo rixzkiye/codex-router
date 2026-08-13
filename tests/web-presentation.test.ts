@@ -30,6 +30,9 @@ describe("Web Console presentation rules", () => {
     expect(css).not.toMatch(/transition[^;]*\bease-in(?:\s|;|,)/);
     expect(css).toContain("prefers-reduced-motion: reduce");
     expect(css).toContain("(hover: hover) and (pointer: fine)");
+    expect(css).toContain("forced-colors: active");
+    expect(css).toMatch(/@media \(max-width: 767px\)[\s\S]*\.service-preferences/);
+    expect(css).toMatch(/\.button:active:not\(:disabled\)[\s\S]*scale\(0\.98\)/);
   });
 });
 

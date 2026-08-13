@@ -164,6 +164,29 @@ export interface BootstrapDto {
 
 export type EvidenceState = "ready" | "degraded" | "restricted" | "unavailable" | "unknown" | "stale";
 
+export interface ManagedSetupStatusDto {
+  configured: boolean;
+  background: boolean;
+  startAtLogin: boolean;
+  service: {
+    state: "running" | "stopped" | "missing" | "attention";
+    installed: boolean;
+    running: boolean;
+    startAtLogin: boolean;
+    message: string;
+  };
+  mcp: { state: "absent" | "owned" | "foreign" | "drifted" | "unavailable" | "disabled"; message: string };
+  url: string;
+  paths: {
+    configFile: string;
+    stateRoot: string;
+    manifestFile: string;
+    mcpManifestFile: string;
+    serviceFile: string;
+    logFile: string;
+  };
+}
+
 export interface ProviderDto {
   id: string;
   displayName: string;

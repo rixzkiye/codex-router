@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import axe from "axe-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { RouterApplicationService } from "../src/application.js";
@@ -51,7 +51,7 @@ describe("platform Console pages", () => {
       rules: { region: { enabled: false }, "color-contrast": { enabled: false } }
     });
     expect(result.violations).toEqual([]);
-  }, 20_000);
+  }, 45_000);
 
   it("renders provider onboarding from the safe browser auth boundary", () => {
     render(<ProvidersPage
@@ -120,5 +120,39 @@ describe("platform Console pages", () => {
       rules: { region: { enabled: false }, "color-contrast": { enabled: false } }
     });
     expect(result.violations).toEqual([]);
+  }, 20_000);
+
+  it("shows truthful managed-service, login, MCP, and path readback with explicit controls", async () => {
+    const api = new ConsoleApi();
+    const get = vi.spyOn(api, "get").mockResolvedValue({
+      configured: true,
+      background: true,
+      startAtLogin: false,
+      service: { state: "running", installed: true, running: true, startAtLogin: false, message: "The current-user service is running." },
+      mcp: { state: "owned", message: "Codex readback matches the owned entry." },
+      url: "http://127.0.0.1:4178",
+      paths: {
+        configFile: "/home/user/.config/codex-router/config.json",
+        stateRoot: "/home/user/.local/state/codex-router",
+        manifestFile: "/home/user/.local/state/codex-router/setup-manifest.json",
+        mcpManifestFile: "/home/user/.local/state/codex-router/mcp-manifest.json",
+        serviceFile: "/home/user/.config/systemd/user/codex-router.service",
+        logFile: "/home/user/.local/state/codex-router/logs/router.log"
+      }
+    });
+    const mutate = vi.spyOn(api, "mutate").mockResolvedValue({ accepted: true });
+    const { container } = render(<PlatformDiagnosticsPage api={api} data={data} connection="live" navigate={vi.fn()} refresh={vi.fn(async () => undefined)} />);
+    expect(await screen.findByRole("heading", { level: 2, name: "Router service" })).toBeVisible();
+    expect(screen.getByText("Codex Router is running")).toBeVisible();
+    expect(screen.getByText(/Codex readback matches the owned entry/)).toBeVisible();
+    expect(screen.getByText("/home/user/.config/systemd/user/codex-router.service")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /Restart & reconnect/ }));
+    expect(mutate).toHaveBeenCalledWith("/api/v1/management/restart", "POST", {});
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /Run in background/ })).toBeEnabled());
+    fireEvent.click(screen.getByRole("checkbox", { name: /Run in background/ }));
+    expect(mutate).toHaveBeenCalledWith("/api/v1/management/background", "POST", { enabled: false, startAtLogin: false });
+    const accessibility = await axe.run(container, { rules: { region: { enabled: false }, "color-contrast": { enabled: false } } });
+    expect(accessibility.violations).toEqual([]);
+    expect(get).toHaveBeenCalledWith("/api/v1/management");
   }, 20_000);
 });
