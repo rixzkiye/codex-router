@@ -1,5 +1,8 @@
 # Codex Router
 
+[![CI](https://github.com/rixzkiye/codex-router/actions/workflows/ci.yml/badge.svg)](https://github.com/rixzkiye/codex-router/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Codex Router is a durable MCP control plane for starting, observing, steering, continuing, cancelling, and handing off long-running coding agents. MCP calls remain bounded while work continues in persistent Codex App Server threads or configured external-provider bridge processes.
 
 The core invariant is: logical agent identity is durable, execution context is replaceable, and the actual worktree plus observed evidence are authoritative.
@@ -129,3 +132,11 @@ pnpm verify
 The suite covers state/idempotency behavior, sparse quotas, event deduplication, Codex App Server and external-provider JSONL contracts, parallel event waits, same-thread continuation, cancellation confirmation, observed results, authority/redaction, single-writer fencing, clean and unclean handoff, structured usage-limit recovery, and restart reconciliation without duplicate start.
 
 Live credential-backed App Server and provider tests are intentionally operator-run because credentials never enter repository fixtures.
+
+## Contributing and security
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow. Please report security issues privately as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+Codex Router is available under the [MIT License](LICENSE).
