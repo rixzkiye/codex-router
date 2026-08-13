@@ -1,7 +1,7 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { InstallationManager, renderServiceDefinition } from "../src/platform/installation.js";
 
 describe("managed platform installation", () => {
@@ -80,5 +80,34 @@ describe("managed platform installation", () => {
     expect(await readFile(active.serviceFile, "utf8")).toBe(serviceBefore);
     expect(await readFile(second.manifestFile, "utf8")).toBe(manifestBefore);
     expect((await manager.verify(second.manifestFile)).ready).toBe(true);
+  });
+
+  it("restores the previous service and manifest when update readiness fails after replacement", async () => {
+    const sandbox = await mkdtemp(path.join(os.tmpdir(), "codex-router-update-fault-"));
+    const root = path.join(sandbox, "managed");
+    const releaseSource = path.join(sandbox, "release");
+    const executable = path.join(releaseSource, "codex-router");
+    const configPath = path.join(sandbox, "config.json");
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(releaseSource, { recursive: true }));
+    await writeFile(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    await writeFile(configPath, "{}\n", { mode: 0o600 });
+    const manager = new InstallationManager();
+    const first = await manager.plan({ root, version: "1.0.0", releaseSource, entrypoint: "codex-router", configPath, host: "linux" });
+    first.checks.splice(0, first.checks.length, { id: "fixture", state: "pass", message: "fixture" });
+    const active = await manager.install(first, { consent: true });
+    const serviceBefore = await readFile(active.serviceFile);
+    const manifestBefore = await readFile(first.manifestFile);
+
+    await writeFile(executable, "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+    const second = await manager.plan({ root, version: "1.1.0", releaseSource, entrypoint: "codex-router", configPath, host: "linux" });
+    second.checks.splice(0, second.checks.length, { id: "fixture", state: "pass", message: "fixture" });
+    const verify = vi.spyOn(manager, "verify").mockResolvedValueOnce({ ready: false, checks: [], manifest: active });
+
+    await expect(manager.install(second, { consent: true })).rejects.toThrow(/readiness/);
+    verify.mockRestore();
+    expect(await readFile(active.serviceFile)).toEqual(serviceBefore);
+    expect(await readFile(first.manifestFile)).toEqual(manifestBefore);
+    expect((await manager.verify(first.manifestFile)).ready).toBe(true);
+    await expect(stat(second.releaseRoot)).rejects.toThrow();
   });
 });

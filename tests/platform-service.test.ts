@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import { once } from "node:events";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { inferenceConfigSchema } from "../src/config.js";
 import { PlatformService } from "../src/platform/service.js";
 import { RouterDatabase } from "../src/store/database.js";
@@ -62,6 +65,25 @@ describe("PlatformService", () => {
     expect(events.map((event) => event.event_type)).toEqual([
       "platform_operation_started", "provider_enablement_changed", "platform_operation_completed"
     ]);
+  });
+
+  it("validates authentication through a durable scoped lock with monotonic fencing", async () => {
+    const firstProvider = service.provider("deepseek");
+    const first = service.validateProvider("test-actor", "deepseek", {
+      idempotencyKey: "validate-deepseek-001",
+      expectedVersion: firstProvider.version
+    });
+    expect((await service.waitForOperation(first.id, 2_000)).state).toBe("completed");
+    const secondProvider = service.provider("deepseek");
+    const second = service.validateProvider("test-actor", "deepseek", {
+      idempotencyKey: "validate-deepseek-002",
+      expectedVersion: secondProvider.version
+    });
+    expect((await service.waitForOperation(second.id, 2_000)).state).toBe("completed");
+    const counter = database.connection.prepare("SELECT value_json FROM platform_settings WHERE key = ?")
+      .get("lock-counter:credential:deepseek") as { value_json: string };
+    expect(JSON.parse(counter.value_json)).toEqual({ token: 2 });
+    expect(database.connection.prepare("SELECT * FROM platform_operation_locks").all()).toEqual([]);
   });
 
   it("records sanitized request timing and provider usage", () => {
@@ -163,6 +185,167 @@ describe("PlatformService", () => {
       localDatabase.close();
       server.close();
       await once(server, "close");
+    }
+  });
+
+  it("discovers, validates, selects, and explicitly removes a local model through durable operations", async () => {
+    let removed = false;
+    const server = createServer((request, response) => {
+      response.setHeader("Content-Type", "application/json");
+      if (request.url === "/api/version") return void response.end(JSON.stringify({ version: "fixture" }));
+      if (request.url === "/api/tags") return void response.end(JSON.stringify({ models: [{ name: "qwen-fixture:latest", size: 42, digest: "sha256:fixture" }] }));
+      if (request.url === "/api/show") return void response.end(JSON.stringify({ modified_at: "2026-08-13T00:00:00.000Z", capabilities: ["tools"], model_info: { fixture_context_length: 8192 } }));
+      if (request.url === "/api/chat") return void response.end(JSON.stringify({ done: true, eval_count: 8, message: { tool_calls: [{ function: { name: "fixture" } }] } }));
+      if (request.url === "/api/delete") { removed = true; return void response.end("{}"); }
+      response.writeHead(404).end("{}");
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing local runtime fixture address");
+    const localDatabase = new RouterDatabase(":memory:");
+    const inference = inferenceConfigSchema.parse({
+      callerTokenRef: "env:PLATFORM_TEST_CALLER",
+      host: "127.0.0.1",
+      port: 0,
+      localModels: { baseUrl: `http://127.0.0.1:${address.port}` },
+      providers: [{ id: "local", baseUrl: `http://127.0.0.1:${address.port}/v1`, keyless: true }],
+      models: [{ id: "local/seed", providerId: "local", upstreamModel: "seed" }]
+    });
+    const localService = new PlatformService(localDatabase.connection, new Registry(localDatabase), inference);
+    try {
+      const discovery = localService.discoverLocalModels("test-actor", {
+        idempotencyKey: "local-discovery-001",
+        expectedVersion: localService.localRuntime().version
+      });
+      expect((await localService.waitForOperation(discovery.id, 2_000)).state).toBe("completed");
+      expect(localService.localModel("qwen-fixture:latest")).toMatchObject({ state: "installed", definition: { contextWindow: 8192 } });
+
+      let model = localService.localModel("qwen-fixture:latest");
+      const benchmark = localService.benchmarkLocalModel("test-actor", model.id, {
+        idempotencyKey: "local-benchmark-001",
+        expectedVersion: model.version
+      });
+      expect((await localService.waitForOperation(benchmark.id, 2_000)).result).toMatchObject({ validated: true });
+      model = localService.localModel(model.id);
+      localService.setLocalModelSelected("test-actor", model.id, true, {
+        idempotencyKey: "local-select-001",
+        expectedVersion: model.version
+      });
+      expect(localService.localModel(model.id).selected).toBe(true);
+      model = localService.localModel(model.id);
+      localService.setLocalModelSelected("test-actor", model.id, false, {
+        idempotencyKey: "local-unselect-001",
+        expectedVersion: model.version
+      });
+      model = localService.localModel(model.id);
+      const removal = localService.removeLocalModel("test-actor", model.id, {
+        idempotencyKey: "local-remove-001",
+        expectedVersion: model.version,
+        consent: true
+      });
+      expect((await localService.waitForOperation(removal.id, 2_000)).state).toBe("completed");
+      expect(removed).toBe(true);
+      expect(() => localService.localModel(model.id)).toThrow(/not found/);
+    } finally {
+      await localService.close();
+      localDatabase.close();
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("serializes installation writers with monotonic fencing and releases the scope", async () => {
+    const sandbox = await mkdtemp(path.join(os.tmpdir(), "codex-router-platform-lock-"));
+    const releaseSource = path.join(sandbox, "release");
+    const configPath = path.join(sandbox, "config.json");
+    await mkdir(releaseSource, { recursive: true });
+    await writeFile(path.join(releaseSource, "codex-router"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    await writeFile(configPath, "{}\n", { mode: 0o600 });
+    const target = { root: path.join(sandbox, "managed"), version: "1.0.0", releaseSource, entrypoint: "codex-router", configPath, host: "linux" as const };
+    try {
+      const first = service.planInstallation("test-actor", target, {
+        idempotencyKey: "install-plan-lock-001",
+        expectedVersion: 1
+      });
+      expect(() => service.planInstallation("test-actor", target, {
+        idempotencyKey: "install-plan-lock-002",
+        expectedVersion: 1
+      })).toThrow(/active writer/);
+      expect((await service.waitForOperation(first.id, 15_000)).state).toBe("completed");
+      const second = service.planInstallation("test-actor", target, {
+        idempotencyKey: "install-plan-lock-003",
+        expectedVersion: 1
+      });
+      expect((await service.waitForOperation(second.id, 15_000)).state).toBe("completed");
+      const counter = database.connection.prepare("SELECT value_json FROM platform_settings WHERE key = ?")
+        .get("lock-counter:installation:current") as { value_json: string };
+      expect(JSON.parse(counter.value_json)).toEqual({ token: 2 });
+      expect(database.connection.prepare("SELECT * FROM platform_operation_locks WHERE scope = ?").all("installation:current")).toEqual([]);
+    } finally {
+      await rm(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("applies, updates, rolls back, disables, and uninstalls with event-before-projection readback", async () => {
+    const sandbox = await mkdtemp(path.join(os.tmpdir(), "codex-router-platform-install-"));
+    const releaseSource = path.join(sandbox, "release");
+    const configPath = path.join(sandbox, "config.json");
+    const manifestFile = path.join(sandbox, "managed", "install-manifest.json");
+    await mkdir(releaseSource, { recursive: true });
+    await writeFile(path.join(releaseSource, "codex-router"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    await writeFile(configPath, "{}\n", { mode: 0o600 });
+    const target = { root: path.join(sandbox, "managed"), version: "1.0.0", releaseSource, entrypoint: "codex-router", configPath, host: "linux" as const };
+    try {
+      const install = service.applyInstallation("test-actor", target, {
+        idempotencyKey: "install-apply-service-001",
+        expectedVersion: 1,
+        consent: true
+      });
+      expect((await service.waitForOperation(install.id, 15_000)).state).toBe("completed");
+      expect(service.installState()).toMatchObject({ version: 1, manifest: { releaseVersion: "1.0.0", state: "active" } });
+      const installEvents = database.connection.prepare(
+        "SELECT event_type FROM platform_event_journal WHERE operation_id = ? ORDER BY sequence"
+      ).all(install.id) as Array<{ event_type: string }>;
+      expect(installEvents.map((entry) => entry.event_type)).toEqual([
+        "platform_operation_started", "install_state_observed", "platform_operation_completed"
+      ]);
+
+      await writeFile(path.join(releaseSource, "codex-router"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+      const update = service.applyInstallation("test-actor", { ...target, version: "1.1.0" }, {
+        idempotencyKey: "install-update-service-001",
+        expectedVersion: service.installState()!.version,
+        consent: true
+      });
+      expect((await service.waitForOperation(update.id, 15_000)).state).toBe("completed");
+      expect(service.installState()).toMatchObject({ version: 2, manifest: { releaseVersion: "1.1.0" } });
+
+      const rollback = service.rollbackInstallation("test-actor", manifestFile, {
+        idempotencyKey: "install-rollback-service-001",
+        expectedVersion: service.installState()!.version,
+        consent: true
+      });
+      expect((await service.waitForOperation(rollback.id, 15_000)).state).toBe("completed");
+      expect(service.installState()).toMatchObject({ version: 3, manifest: { releaseVersion: "1.0.0", state: "active" } });
+
+      const disable = service.disableInstallation("test-actor", manifestFile, {
+        idempotencyKey: "install-disable-service-001",
+        expectedVersion: service.installState()!.version,
+        consent: true
+      });
+      expect((await service.waitForOperation(disable.id, 15_000)).state).toBe("completed");
+      expect(service.installState()).toMatchObject({ version: 4, manifest: { state: "disabled" } });
+
+      const uninstall = service.uninstallInstallation("test-actor", manifestFile, {
+        idempotencyKey: "install-uninstall-service-001",
+        expectedVersion: service.installState()!.version,
+        consent: true,
+        removeRetainedReleases: true
+      });
+      expect((await service.waitForOperation(uninstall.id, 15_000)).state).toBe("completed");
+      expect(service.installState()).toBeNull();
+    } finally {
+      await rm(sandbox, { recursive: true, force: true });
     }
   });
 });

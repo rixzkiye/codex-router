@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -136,6 +136,61 @@ describe("Web Console gateway", () => {
     controller.abort();
     await reader.cancel().catch(() => undefined);
   });
+
+  it("exposes versioned, consent-gated installation planning, apply, readback, and uninstall", async () => {
+    const harness = await createHarness();
+    const session = await authenticate(harness.gateway);
+    const sandbox = await mkdtemp(path.join(tmpdir(), "codex-router-web-install-"));
+    const releaseSource = path.join(sandbox, "release");
+    const configPath = path.join(sandbox, "config.json");
+    const root = path.join(sandbox, "managed");
+    const target = { root, version: "1.0.0", releaseSource, entrypoint: "codex-router", configPath, host: "linux" };
+    await mkdir(releaseSource, { recursive: true });
+    await writeFile(path.join(releaseSource, "codex-router"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    await writeFile(configPath, "{}\n", { mode: 0o600 });
+    try {
+      const plan = await mutate(harness.gateway, session, "/api/v1/installation/plan", {
+        idempotencyKey: "web-install-plan-001",
+        expectedVersion: 1,
+        target
+      });
+      expect(plan.response.status).toBe(202);
+      expect((await waitForPlatformOperation(harness.gateway, session.cookie, plan.body.id)).state).toBe("completed");
+
+      const apply = await mutate(harness.gateway, session, "/api/v1/installation/apply", {
+        idempotencyKey: "web-install-apply-001",
+        expectedVersion: 1,
+        consent: true,
+        target
+      });
+      expect(apply.response.status).toBe(202);
+      expect((await waitForPlatformOperation(harness.gateway, session.cookie, apply.body.id)).state).toBe("completed");
+      const installed = await fetch(`${harness.gateway.url}/api/v1/installation`, { headers: { Cookie: session.cookie } });
+      expect(await installed.json()).toMatchObject({ installation: { version: 1, manifest: { releaseVersion: "1.0.0" } } });
+
+      const refused = await mutate(harness.gateway, session, "/api/v1/installation/uninstall", {
+        idempotencyKey: "web-install-uninstall-refused",
+        expectedVersion: 1,
+        consent: false,
+        manifestFile: path.join(root, "install-manifest.json")
+      });
+      expect(refused.response.status).toBe(422);
+
+      const uninstall = await mutate(harness.gateway, session, "/api/v1/installation/uninstall", {
+        idempotencyKey: "web-install-uninstall-001",
+        expectedVersion: 1,
+        consent: true,
+        manifestFile: path.join(root, "install-manifest.json"),
+        removeRetainedReleases: true
+      });
+      expect(uninstall.response.status).toBe(202);
+      expect((await waitForPlatformOperation(harness.gateway, session.cookie, uninstall.body.id)).state).toBe("completed");
+      const removed = await fetch(`${harness.gateway.url}/api/v1/installation`, { headers: { Cookie: session.cookie } });
+      expect(await removed.json()).toEqual({ installation: null });
+    } finally {
+      await rm(sandbox, { recursive: true, force: true });
+    }
+  });
 });
 
 async function createHarness() {
@@ -168,4 +223,33 @@ async function authenticate(gateway: WebGateway): Promise<{ cookie: string; csrf
   const cookie = response.headers.get("set-cookie")!.split(";", 1)[0]!;
   const body = await response.json() as { csrfToken: string };
   return { cookie, csrfToken: body.csrfToken };
+}
+
+async function mutate(
+  gateway: WebGateway,
+  session: { cookie: string; csrfToken: string },
+  route: string,
+  body: Record<string, unknown>
+): Promise<{ response: Response; body: { id: string } }> {
+  const response = await fetch(`${gateway.url}${route}`, {
+    method: "POST",
+    headers: {
+      Cookie: session.cookie,
+      "Content-Type": "application/json",
+      Origin: gateway.url,
+      "X-CSRF-Token": session.csrfToken
+    },
+    body: JSON.stringify(body)
+  });
+  return { response, body: await response.json() as { id: string } };
+}
+
+async function waitForPlatformOperation(gateway: WebGateway, cookie: string, operationId: string): Promise<{ state: string }> {
+  for (let attempt = 0; attempt < 150; attempt += 1) {
+    const response = await fetch(`${gateway.url}/api/v1/operations/${encodeURIComponent(operationId)}`, { headers: { Cookie: cookie } });
+    const operation = await response.json() as { state: string };
+    if (!["pending", "running"].includes(operation.state)) return operation;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Operation ${operationId} did not become terminal`);
 }

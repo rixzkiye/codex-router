@@ -87,20 +87,7 @@ export function configuredModels(config: InferenceConfig | undefined): ModelDefi
   return config.models.map((model) => {
     const provider = config.providers.find((entry) => entry.id === model.providerId);
     const profile = provider?.requestProfile ?? "generic-openai";
-    const capabilities = {
-      input: ["text"] as Array<"text" | "image">,
-      nativeImage: false,
-      derivedImage: false,
-      reasoningEfforts: [] as string[],
-      defaultReasoningEffort: null,
-      tools: true,
-      forcedToolChoice: false,
-      parallelTools: false,
-      structuredOutput: false,
-      standaloneSearch: false,
-      compaction: Boolean(provider?.protocol === "responses" || provider?.protocol === undefined),
-      collaboration: provider?.id === "native-codex"
-    };
+    const capabilities = model.capabilities;
     const compatibilityHash = createHash("sha256")
       .update(JSON.stringify({ model, profile, capabilities }))
       .digest("hex");
@@ -113,11 +100,11 @@ export function configuredModels(config: InferenceConfig | undefined): ModelDefi
       contextWindow: model.contextWindow ?? null,
       maxOutputTokens: model.maxOutputTokens ?? null,
       provenance: "checked-in",
-      publication: "listed",
+      publication: model.publication,
       requestProfile: profile,
       compatibilityHash,
       capabilities,
-      pricing: null
+      pricing: model.pricing
     };
   });
 }

@@ -251,12 +251,44 @@ export class RouterApplicationService {
     return this.redactor.redact(this.router.platform.operation(operationId));
   }
 
+  waitForPlatformOperation(operationId: string, timeoutMs?: number) {
+    return this.router.platform.waitForOperation(operationId, timeoutMs);
+  }
+
+  cancelPlatformOperation(actor: string, operationId: string) {
+    return this.redactor.redact(this.router.platform.cancelOperation(actor, operationId));
+  }
+
   inferenceRequests(limit = 100) {
     return this.redactor.redact(this.router.platform.requests(limit));
   }
 
   usage() {
     return this.redactor.redact(this.router.platform.usage());
+  }
+
+  routingDecisions(limit = 100) {
+    return this.redactor.redact(this.router.platform.routingDecisions(limit));
+  }
+
+  localRuntime() {
+    return this.redactor.redact(this.router.platform.localRuntime());
+  }
+
+  localModels() {
+    return this.redactor.redact(this.router.platform.localModels());
+  }
+
+  nativeCatalogs() {
+    return this.redactor.redact(this.router.platform.nativeCatalogs());
+  }
+
+  platformEvidence() {
+    return this.redactor.redact(this.router.platform.evidence());
+  }
+
+  installState() {
+    return this.redactor.redact(this.router.platform.installState());
   }
 
   platformDiagnostics() {
@@ -278,6 +310,28 @@ export class RouterApplicationService {
     input: { idempotencyKey: string; expectedVersion: number }
   ) {
     return this.redactor.redact(this.router.platform.validateProvider(actor, providerId, input));
+  }
+
+  providerLoginLaunch(providerId: string) {
+    return this.redactor.redact(this.router.platform.providerLoginLaunch(providerId));
+  }
+
+  loginProvider(
+    actor: string,
+    providerId: string,
+    input: { idempotencyKey: string; expectedVersion: number },
+    options: { codexHome?: string; inheritTerminal?: boolean } = {}
+  ) {
+    return this.redactor.redact(this.router.platform.loginProvider(actor, providerId, input, options));
+  }
+
+  logoutProvider(
+    actor: string,
+    providerId: string,
+    input: { idempotencyKey: string; expectedVersion: number },
+    options: { codexHome?: string; inheritTerminal?: boolean } = {}
+  ) {
+    return this.redactor.redact(this.router.platform.logoutProvider(actor, providerId, input, options));
   }
 
   refreshProviderCatalog(
@@ -303,6 +357,58 @@ export class RouterApplicationService {
     input: { idempotencyKey: string; expectedVersion: number }
   ) {
     return this.redactor.redact(this.router.platform.runMockCompatibility(actor, modelId, input));
+  }
+
+  discoverLocalModels(actor: string, input: { idempotencyKey: string; expectedVersion: number }) {
+    return this.redactor.redact(this.router.platform.discoverLocalModels(actor, input));
+  }
+
+  downloadLocalModel(actor: string, modelId: string, input: { idempotencyKey: string; expectedVersion: number; consent: boolean }) {
+    return this.redactor.redact(this.router.platform.downloadLocalModel(actor, modelId, input));
+  }
+
+  benchmarkLocalModel(actor: string, modelId: string, input: { idempotencyKey: string; expectedVersion: number }) {
+    return this.redactor.redact(this.router.platform.benchmarkLocalModel(actor, modelId, input));
+  }
+
+  setLocalModelSelected(actor: string, modelId: string, selected: boolean, input: { idempotencyKey: string; expectedVersion: number }) {
+    return this.redactor.redact(this.router.platform.setLocalModelSelected(actor, modelId, selected, input));
+  }
+
+  removeLocalModel(actor: string, modelId: string, input: { idempotencyKey: string; expectedVersion: number; consent: boolean }) {
+    return this.redactor.redact(this.router.platform.removeLocalModel(actor, modelId, input));
+  }
+
+  planInstallation(
+    actor: string,
+    params: { root: string; version: string; releaseSource: string; entrypoint: string; configPath: string; host?: NodeJS.Platform },
+    input: { idempotencyKey: string; expectedVersion: number }
+  ) {
+    return this.redactor.redact(this.router.platform.planInstallation(actor, params, input));
+  }
+
+  applyInstallation(
+    actor: string,
+    params: { root: string; version: string; releaseSource: string; entrypoint: string; configPath: string; host?: NodeJS.Platform },
+    input: { idempotencyKey: string; expectedVersion: number; consent: boolean }
+  ) {
+    return this.redactor.redact(this.router.platform.applyInstallation(actor, params, input));
+  }
+
+  rollbackInstallation(actor: string, manifestFile: string, input: { idempotencyKey: string; expectedVersion: number; consent: boolean }) {
+    return this.redactor.redact(this.router.platform.rollbackInstallation(actor, manifestFile, input));
+  }
+
+  disableInstallation(actor: string, manifestFile: string, input: { idempotencyKey: string; expectedVersion: number; consent: boolean }) {
+    return this.redactor.redact(this.router.platform.disableInstallation(actor, manifestFile, input));
+  }
+
+  uninstallInstallation(
+    actor: string,
+    manifestFile: string,
+    input: { idempotencyKey: string; expectedVersion: number; consent: boolean; removeRetainedReleases?: boolean }
+  ) {
+    return this.redactor.redact(this.router.platform.uninstallInstallation(actor, manifestFile, input));
   }
 
   async waitForVersion(afterVersion: number, timeoutMs: number) {
@@ -417,7 +523,17 @@ function safeConfig(config: RouterConfig) {
               }
             : { configured: false },
           providers: config.inference.providers.map((provider) => ({ id: provider.id, keyless: provider.keyless })),
-          models: config.inference.models.map((model) => ({ id: model.id, providerId: model.providerId }))
+          models: config.inference.models.map((model) => ({ id: model.id, providerId: model.providerId })),
+          compaction: config.inference.compaction ? {
+            configured: true,
+            maxEnvelopeBytes: config.inference.compaction.maxEnvelopeBytes,
+            maxSummaryBytes: config.inference.compaction.maxSummaryBytes,
+            integrityKeyRef: config.inference.compaction.integrityKeyRef
+          } : { configured: false },
+          toolResultAging: config.inference.toolResultAging,
+          visionBridge: config.inference.visionBridge,
+          localModels: config.inference.localModels,
+          routingPolicy: config.inference.routingPolicy
         }
       : { enabled: false },
     runtimes: config.runtimes.map((runtime) => ({

@@ -95,7 +95,43 @@ export const inferenceModelConfigSchema = z.object({
   upstreamModel: z.string().min(1),
   displayName: z.string().min(1).optional(),
   contextWindow: z.number().int().positive().optional(),
-  maxOutputTokens: z.number().int().positive().optional()
+  maxOutputTokens: z.number().int().positive().optional(),
+  enabled: z.boolean().default(true),
+  publication: z.enum(["curated", "mock-compatible", "live-compatible", "experimental", "listed"]).default("listed"),
+  capabilities: z.object({
+    input: z.array(z.enum(["text", "image"])).min(1).default(["text"]),
+    nativeImage: z.boolean().default(false),
+    derivedImage: z.boolean().default(false),
+    reasoningEfforts: z.array(z.string().min(1)).default([]),
+    defaultReasoningEffort: z.string().min(1).nullable().default(null),
+    tools: z.boolean().default(false),
+    forcedToolChoice: z.boolean().default(false),
+    parallelTools: z.boolean().default(false),
+    structuredOutput: z.boolean().default(false),
+    standaloneSearch: z.boolean().default(false),
+    compaction: z.boolean().default(false),
+    collaboration: z.boolean().default(false)
+  }).default({
+    input: ["text"], nativeImage: false, derivedImage: false, reasoningEfforts: [], defaultReasoningEffort: null,
+    tools: false, forcedToolChoice: false, parallelTools: false, structuredOutput: false,
+    standaloneSearch: false, compaction: false, collaboration: false
+  }),
+  pricing: z.object({
+    source: z.string().min(1),
+    version: z.string().min(1),
+    inputPerMillion: z.number().nonnegative(),
+    outputPerMillion: z.number().nonnegative()
+  }).nullable().default(null)
+}).superRefine((model, context) => {
+  if (model.capabilities.nativeImage && !model.capabilities.input.includes("image")) {
+    context.addIssue({ code: "custom", path: ["capabilities", "nativeImage"], message: "Native image capability requires image input modality" });
+  }
+  if (model.capabilities.defaultReasoningEffort && !model.capabilities.reasoningEfforts.includes(model.capabilities.defaultReasoningEffort)) {
+    context.addIssue({ code: "custom", path: ["capabilities", "defaultReasoningEffort"], message: "Default reasoning effort must appear in the declared reasoning ladder" });
+  }
+  if (model.enabled && !["mock-compatible", "live-compatible", "listed"].includes(model.publication)) {
+    context.addIssue({ code: "custom", path: ["enabled"], message: "An enabled model requires explicit publishable compatibility state" });
+  }
 });
 
 export const inferenceTranslationConfigSchema = z

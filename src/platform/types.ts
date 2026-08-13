@@ -120,6 +120,8 @@ export type PlatformOperationKind =
   | "local-model-discover"
   | "local-model-download"
   | "local-model-benchmark"
+  | "local-model-select"
+  | "local-model-unselect"
   | "local-model-remove"
   | "install-plan"
   | "install-apply"
@@ -240,4 +242,15 @@ export interface RoutingDecision {
     reasons: string[];
   }>;
   createdAt: string;
+}
+
+export interface PlatformEvidence {
+  id: string;
+  capability: string;
+  category: "local-check" | "hosted-ci" | "security-review" | "accessibility-review" | "package" | "provider-live" | "install" | "deployment" | "live-health";
+  state: "pass" | "fail" | "blocked" | "unknown";
+  provenance: Record<string, unknown>;
+  observedAt: string;
+  expiresAt: string | null;
+  headSha: string | null;
 }

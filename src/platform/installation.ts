@@ -99,6 +99,10 @@ export class InstallationManager {
     options.signal?.throwIfAborted();
     const staging = path.join(plan.root, ".staging", plan.id);
     let releaseInstalled = false;
+    let serviceInstalled = false;
+    let manifestInstalled = false;
+    let previousService: Uint8Array | null = null;
+    let previousManifestFile: Uint8Array | null = null;
     await mkdir(staging, { recursive: true, mode: 0o700 });
     try {
       const releaseStaging = path.join(staging, "release");
@@ -118,9 +122,17 @@ export class InstallationManager {
       await mkdir(path.dirname(plan.releaseRoot), { recursive: true, mode: 0o700 });
       await mkdir(path.dirname(plan.serviceFile), { recursive: true, mode: 0o700 });
       if (await exists(plan.releaseRoot)) throw new Error(`Release ${plan.version} already exists`);
+      const previousManifest = await readManifest(plan.manifestFile);
+      if ((previousManifest?.activeRelease ?? null) !== plan.previousRelease) {
+        throw new Error("Installation state changed after the plan was created; create a fresh plan");
+      }
+      previousService = (await exists(plan.serviceFile)) ? await readFile(plan.serviceFile) : null;
+      previousManifestFile = (await exists(plan.manifestFile)) ? await readFile(plan.manifestFile) : null;
+      options.signal?.throwIfAborted();
       await rename(releaseStaging, plan.releaseRoot);
       releaseInstalled = true;
       await rename(stagedService, plan.serviceFile);
+      serviceInstalled = true;
       const executableFile = path.join(plan.releaseRoot, plan.entrypoint);
       const executableHash = await fileHash(executableFile);
       const hashes = {
@@ -129,10 +141,6 @@ export class InstallationManager {
         config: await fileHash(plan.configPath)
       };
       const installedAt = new Date().toISOString();
-      const previousManifest = await readManifest(plan.manifestFile);
-      if ((previousManifest?.activeRelease ?? null) !== plan.previousRelease) {
-        throw new Error("Installation state changed after the plan was created; create a fresh plan");
-      }
       const manifest: InstallManifest = {
         owner: INSTALL_OWNER,
         version: 2,
@@ -158,8 +166,20 @@ export class InstallationManager {
         state: "active"
       };
       await atomicJson(plan.manifestFile, manifest);
-      return await requireManifest(plan.manifestFile);
+      manifestInstalled = true;
+      options.signal?.throwIfAborted();
+      const readback = await this.verify(plan.manifestFile);
+      if (!readback.ready) throw new Error("Installed release failed readiness verification");
+      return readback.manifest;
     } catch (error) {
+      if (manifestInstalled) {
+        if (previousManifestFile) await atomicFile(plan.manifestFile, previousManifestFile);
+        else await rm(plan.manifestFile, { force: true });
+      }
+      if (serviceInstalled) {
+        if (previousService) await atomicFile(plan.serviceFile, previousService);
+        else await rm(plan.serviceFile, { force: true });
+      }
       if (releaseInstalled) await rm(plan.releaseRoot, { recursive: true, force: true });
       throw error;
     } finally {
