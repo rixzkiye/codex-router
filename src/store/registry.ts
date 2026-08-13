@@ -1026,6 +1026,10 @@ export class Registry {
     });
   }
 
+  notifyExternalProjection(version: number): void {
+    if (version > 0) this.#emitVersion(version);
+  }
+
   #findAgentId(event: NormalizedRuntimeEvent): string | null {
     if (event.incarnationId) {
       const row = this.#db.prepare("SELECT agent_id FROM incarnations WHERE id = ?").get(event.incarnationId) as Row | undefined;

@@ -1,12 +1,17 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { gzipSync } from "node:zlib";
 import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import { inferenceConfigSchema, type InferenceConfig } from "../src/config.js";
 import { startInferenceGateway, type InferenceGateway } from "../src/inference/server.js";
+import { PlatformService } from "../src/platform/service.js";
 import { SecretRedactor, type Logger } from "../src/security.js";
+import { RouterDatabase } from "../src/store/database.js";
+import { Registry } from "../src/store/registry.js";
 
 const CALLER_TOKEN_ENV = "CODEX_ROUTER_TEST_INFERENCE_CALLER";
 const PROVIDER_KEY_ENV = "CODEX_ROUTER_TEST_INFERENCE_PROVIDER";
+const TRANSLATION_KEY_ENV = "CODEX_ROUTER_TEST_TRANSLATION";
 const callerToken = "caller-token-that-is-long-enough";
 const providerKey = "provider-key-that-must-not-leak";
 
@@ -16,6 +21,7 @@ afterEach(async () => {
   while (closers.length) await closers.pop()!();
   delete process.env[CALLER_TOKEN_ENV];
   delete process.env[PROVIDER_KEY_ENV];
+  delete process.env[TRANSLATION_KEY_ENV];
 });
 
 describe("model inference gateway", () => {
@@ -38,6 +44,50 @@ describe("model inference gateway", () => {
       object: "list",
       data: [{ id: "public/model", object: "model", created: 0, owned_by: "fixture" }]
     });
+    expect(upstream.requests).toHaveLength(0);
+  });
+
+  it("uses durable provider and model eligibility for catalog and dispatch", async () => {
+    const upstream = await startUpstream((_request, response) => {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "ok" }] }] }));
+    });
+    process.env[CALLER_TOKEN_ENV] = callerToken;
+    process.env[PROVIDER_KEY_ENV] = providerKey;
+    const config = inferenceConfigSchema.parse(inferenceConfig(upstream.url));
+    const database = new RouterDatabase(":memory:");
+    const platform = new PlatformService(database.connection, new Registry(database), config);
+    const gateway = await startInferenceGateway(config, new SecretRedactor(), new CapturingLogger(), { port: 0, platform });
+    closers.push(async () => {
+      await gateway.close();
+      await platform.close();
+      database.close();
+    });
+
+    const provider = platform.provider("fixture");
+    platform.setProviderEnabled("test", provider.id, false, {
+      idempotencyKey: "disable-provider-route",
+      expectedVersion: provider.version
+    });
+    expect(await gatewayModels(gateway)).toEqual([]);
+    const disabledProvider = await post(gateway, { model: "public/model", input: "blocked" });
+    expect(disabledProvider.status).toBe(409);
+    expect(await disabledProvider.json()).toMatchObject({ error: { code: "provider_not_enabled" } });
+
+    const nextProvider = platform.provider("fixture");
+    platform.setProviderEnabled("test", nextProvider.id, true, {
+      idempotencyKey: "enable-provider-route",
+      expectedVersion: nextProvider.version
+    });
+    const model = platform.model("public/model");
+    platform.setModelEnabled("test", model.gatewayId, false, {
+      idempotencyKey: "disable-model-route",
+      expectedVersion: model.version
+    });
+    expect(await gatewayModels(gateway)).toEqual([]);
+    const disabledModel = await post(gateway, { model: "public/model", input: "blocked" });
+    expect(disabledModel.status).toBe(409);
+    expect(await disabledModel.json()).toMatchObject({ error: { code: "model_not_enabled" } });
     expect(upstream.requests).toHaveLength(0);
   });
 
@@ -155,6 +205,50 @@ describe("model inference gateway", () => {
     expect(upstream.requests).toHaveLength(1);
   });
 
+  it("rejects an empty terminal SSE completion before committing response bytes", async () => {
+    const upstream = await startUpstream((_request, response) => {
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.end(`event: response.completed\ndata: {"response":{"status":"completed","output":[]}}\n\n`);
+    });
+    const { gateway } = await startHarness(upstream.url);
+    const response = await post(gateway, { model: "public/model", input: "hello", stream: true });
+    expect(response.status).toBe(502);
+    expect(await response.text()).toContain("empty_completion");
+    expect(upstream.requests).toHaveLength(1);
+  });
+
+  it("uses an independent internal capability for LiteLLM translation", async () => {
+    const translationCapability = "translation-capability-with-at-least-thirty-two-bytes";
+    process.env[TRANSLATION_KEY_ENV] = translationCapability;
+    const translator = await startUpstream(async (request, response) => {
+      const body = await readJson(request);
+      expect(body).toMatchObject({ model: "public/model", input: "translate" });
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "ok" }] }] }));
+    });
+    const { gateway } = await startHarness("https://provider.example.invalid/v1", new CapturingLogger(), {
+      translation: {
+        baseUrl: translator.url,
+        capabilityRef: `env:${TRANSLATION_KEY_ENV}`,
+        healthPath: "/health/liveliness",
+        requestTimeoutMs: 5_000
+      },
+      providers: [{
+        id: "fixture",
+        baseUrl: "https://provider.example.invalid/v1",
+        credentialRef: `env:${PROVIDER_KEY_ENV}`,
+        keyless: false,
+        protocol: "chat-completions",
+        requestProfile: "generic-openai"
+      }]
+    });
+    const response = await post(gateway, { model: "public/model", input: "translate" });
+    expect(response.status).toBe(200);
+    expect(translator.requests[0]!.headers.authorization).toBe(`Bearer ${translationCapability}`);
+    expect(translator.requests[0]!.headers.authorization).not.toContain(providerKey);
+    expect(translator.requests[0]!.headers["x-codex-router-provider"]).toBe("fixture");
+  });
+
   it("does not follow provider redirects with the selected credential", async () => {
     const redirectTarget = await startUpstream((_request, response) => {
       response.writeHead(200, { "Content-Type": "application/json" }).end("{}");
@@ -216,6 +310,24 @@ describe("model inference gateway", () => {
       /at least 32 bytes/
     );
   });
+
+  it("decodes bounded gzip bodies only after caller authentication", async () => {
+    const upstream = await startUpstream(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      expect(JSON.parse(Buffer.concat(chunks).toString("utf8"))).toMatchObject({ model: "upstream-model", input: "compressed" });
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "ok" }] }] }));
+    });
+    const { gateway } = await startHarness(upstream.url);
+    const body = gzipSync(JSON.stringify({ model: "public/model", input: "compressed" }));
+    const response = await fetch(`${gateway.url}/v1/responses`, {
+      method: "POST",
+      headers: { ...authHeaders(), "Content-Type": "application/json", "Content-Encoding": "gzip" },
+      body
+    });
+    expect(response.status).toBe(200);
+  });
 });
 
 async function startHarness(
@@ -253,6 +365,12 @@ async function post(gateway: InferenceGateway, body: unknown) {
 
 function authHeaders() {
   return { Authorization: `Bearer ${callerToken}` };
+}
+
+async function gatewayModels(gateway: InferenceGateway) {
+  const response = await fetch(`${gateway.url}/v1/models`, { headers: authHeaders() });
+  expect(response.status).toBe(200);
+  return (await response.json() as { data: unknown[] }).data;
 }
 
 interface UpstreamHarness {
