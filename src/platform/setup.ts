@@ -10,7 +10,7 @@ import { McpInstallationManager, type McpInspection, type McpInstallationSnapsho
 import { managedPaths, type ManagedPaths } from "./paths.js";
 import { UserServiceManager, type ManagedServiceStatus, type ServiceLaunch, type SupportedServiceHost } from "./service-manager.js";
 
-const SETUP_OWNER = "@rixzkiye/codex-router";
+const SETUP_OWNER = "@rizkiye/codex-router";
 
 export interface SetupManifest {
   readonly owner: typeof SETUP_OWNER;

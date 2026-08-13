@@ -3,7 +3,7 @@ import path from "node:path";
 import { commandFailure, systemCommandRunner, type CommandRunner } from "./command.js";
 
 export const MCP_SERVER_NAME = "codex-router";
-const MCP_OWNER = "@rixzkiye/codex-router";
+const MCP_OWNER = "@rizkiye/codex-router";
 
 export interface McpExpectedConfiguration {
   readonly command: string;

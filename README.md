@@ -58,7 +58,7 @@ codex app-server generate-json-schema --out ./schemas
 ## Install and run
 
 ```bash
-npm install --global @rixzkiye/codex-router
+npm install --global @rizkiye/codex-router
 codex-router setup
 codex-router
 ```
