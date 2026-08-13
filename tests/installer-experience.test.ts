@@ -1,8 +1,10 @@
+import { execFile } from "node:child_process";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createServer } from "node:net";
 import { once } from "node:events";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import type { CommandResult, CommandRunner } from "../src/platform/command.js";
@@ -10,6 +12,8 @@ import { McpInstallationManager } from "../src/platform/mcp-installation.js";
 import { managedPaths, type ManagedPaths } from "../src/platform/paths.js";
 import { renderUserService, UserServiceManager, type ServiceLaunch } from "../src/platform/service-manager.js";
 import { ManagedSetup } from "../src/platform/setup.js";
+
+const execFileAsync = promisify(execFile);
 
 class FakeHostRunner implements CommandRunner {
   readonly calls: Array<{ command: string; args: string[] }> = [];
@@ -92,6 +96,8 @@ describe("managed installer experience", () => {
     const base = { nodeExecutable: "/usr/bin/node", entryScript: "/pkg/dist/index.js", configPath: "/managed/config.json", controlTokenFile: "/managed/control-token", port: 4178, startAtLogin: true };
     const linux = renderUserService(paths, { ...base, host: "linux" });
     expect(linux.content).toContain('ExecStart="/usr/bin/node" "/pkg/dist/index.js" "web"');
+    expect(linux.content).toContain("WorkingDirectory=/managed/state");
+    expect(linux.content).not.toContain('WorkingDirectory="/managed/state"');
     expect(linux.content).toContain("--control-token-file");
     expect(linux.statusCommand).toEqual(["systemctl", "--user", "is-active", "codex-router.service"]);
     const darwin = renderUserService({ ...paths, serviceFile: "/Users/router/Library/LaunchAgents/com.rixzkiye.codex-router.plist" }, { ...base, host: "darwin" });
@@ -101,6 +107,23 @@ describe("managed installer experience", () => {
     expect(windows.content).toContain('encoding="UTF-8"');
     expect(windows.content).toContain("<LogonTrigger>");
     expect(windows.startCommand).toEqual(["schtasks.exe", "/Run", "/TN", "Codex Router"]);
+  });
+
+  it.skipIf(process.platform !== "linux")("renders a Linux unit accepted by systemd", async () => {
+    const root = await fixtureRoot("codex-router-systemd-unit-");
+    const paths = fixturePaths(path.join(root, "managed"));
+    const unit = path.join(root, "codex-router.service");
+    const content = renderUserService(paths, {
+      host: "linux",
+      nodeExecutable: "/usr/bin/node",
+      entryScript: "/package/dist/index.js",
+      configPath: paths.configFile,
+      controlTokenFile: paths.controlTokenFile,
+      port: 4178,
+      startAtLogin: true
+    }).content;
+    await writeFile(unit, content);
+    await expect(execFileAsync("systemd-analyze", ["verify", unit])).resolves.toBeDefined();
   });
 
   it("adds, reads back, idempotently retains, and removes an owned Codex MCP entry", async () => {

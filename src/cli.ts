@@ -1,11 +1,14 @@
 import { spawn } from "node:child_process";
+import { stat } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
+import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { ManagedSetup, ManagedSetupStatus, SetupOptions } from "./platform/setup.js";
 
 export interface RouterCliRuntime {
   readonly setup: ManagedSetup;
   readonly cwd: string;
+  readonly home: string;
   readonly stdin: Readable & { isTTY?: boolean };
   readonly stdout: Writable;
   readonly stderr: Writable;
@@ -122,11 +125,14 @@ async function setupCommand(args: string[], runtime: RouterCliRuntime, explicit:
   const adoptMcp = args.includes("--adopt-mcp");
   const requestedRoot = option(args, "--worktree-root");
   const requestedPort = numericOption(args, "--port");
+  const defaultWorktreeRoot = existing?.worktreeRoot ?? await suggestedWorktreeRoot(runtime.cwd, runtime.home);
   let options: SetupOptions;
 
   if (yes) {
+    const worktreeRoot = requestedRoot ?? defaultWorktreeRoot;
+    if (!worktreeRoot) throw new Error("No dedicated projects or worktrees directory was found. Pass --worktree-root /absolute/path.");
     options = {
-      worktreeRoot: requestedRoot ?? existing?.worktreeRoot ?? runtime.cwd,
+      worktreeRoot,
       background: !foreground,
       startAtLogin: !foreground,
       mcpEnabled: !noMcp,
@@ -139,7 +145,7 @@ async function setupCommand(args: string[], runtime: RouterCliRuntime, explicit:
     }
     const prompt = createInterface({ input: runtime.stdin, output: runtime.stdout });
     try {
-      const worktreeRoot = requestedRoot ?? await askValue(prompt, "Allowed projects/worktrees root", existing?.worktreeRoot ?? runtime.cwd);
+      const worktreeRoot = requestedRoot ?? await askValue(prompt, "Allowed projects/worktrees root", defaultWorktreeRoot);
       const background = foreground ? false : await askYesNo(prompt, "Run Codex Router in the background", existing?.background ?? true);
       const startAtLogin = background && await askYesNo(prompt, "Start the background service when you sign in", existing?.startAtLogin ?? true);
       const mcpEnabled = noMcp ? false : await askYesNo(prompt, "Register the codex-router MCP server with Codex", existing?.mcpEnabled ?? true);
@@ -208,9 +214,22 @@ function usage(): string {
   return `Codex Router\n\nUsage:\n  codex-router                         Set up if needed, then open the Console\n  codex-router setup [options]         Create config, user service, and Codex MCP entry\n  codex-router open                    Ensure the opted-in service is ready and open the Console\n  codex-router start [--background]    Run in the foreground or explicitly enable background mode\n  codex-router stop                    Stop the background service\n  codex-router restart                 Restart the background service\n  codex-router status [--json]         Read back setup, service, MCP, and managed paths\n  codex-router logs [--follow]         Show the managed service log\n  codex-router mcp                     Run the stdio MCP server\n  codex-router doctor                  Check the managed installation\n  codex-router uninstall --yes [--purge]\n\nSetup options:\n  --yes                                Accept safe defaults without prompts\n  --worktree-root <absolute-path>      Allowed projects/worktrees root\n  --foreground                         Do not run or start at login in the background\n  --no-mcp                             Do not register Codex MCP\n  --adopt-mcp                          Explicitly replace a conflicting codex-router MCP entry\n  --port <1-65535>                     Console port (default 4178)\n\nCompatibility commands:\n  codex-router web | inference | platform ...\n`;
 }
 
-async function askValue(prompt: ReturnType<typeof createInterface>, label: string, defaultValue: string): Promise<string> {
-  const answer = (await prompt.question(`${label} [${defaultValue}]: `)).trim();
-  return answer || defaultValue;
+async function suggestedWorktreeRoot(cwd: string, home: string): Promise<string | undefined> {
+  const current = path.resolve(cwd);
+  const userHome = path.resolve(home);
+  if (current !== userHome) return current;
+  for (const candidate of [path.join(userHome, "projects"), path.join(userHome, "worktrees")]) {
+    if ((await stat(candidate).catch(() => null))?.isDirectory()) return candidate;
+  }
+  return undefined;
+}
+
+async function askValue(prompt: ReturnType<typeof createInterface>, label: string, defaultValue?: string): Promise<string> {
+  const suffix = defaultValue ? ` [${defaultValue}]` : "";
+  const answer = (await prompt.question(`${label}${suffix}: `)).trim();
+  if (answer) return answer;
+  if (defaultValue) return defaultValue;
+  throw new Error(`${label} is required. Choose an existing dedicated projects or worktrees directory.`);
 }
 
 async function askYesNo(prompt: ReturnType<typeof createInterface>, label: string, defaultValue: boolean): Promise<boolean> {

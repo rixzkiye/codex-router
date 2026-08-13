@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createWriteStream } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { RouterApplicationService } from "./application.js";
@@ -26,6 +27,7 @@ async function main(): Promise<void> {
   await runRouterCli(args, {
     setup,
     cwd: process.cwd(),
+    home: os.homedir(),
     stdin: process.stdin,
     stdout: process.stdout,
     stderr: process.stderr,

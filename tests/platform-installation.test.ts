@@ -8,6 +8,8 @@ describe("managed platform installation", () => {
   it("renders least-privilege current-user service definitions for every supported host", () => {
     const input = { executable: "/managed/codex-router", configPath: "/managed/config.json", stateRoot: "/managed" };
     expect(renderServiceDefinition("linux", input).content).toContain("NoNewPrivileges=true");
+    expect(renderServiceDefinition("linux", input).content).toContain("WorkingDirectory=/managed");
+    expect(renderServiceDefinition("linux", input).content).not.toContain('WorkingDirectory="/managed"');
     expect(renderServiceDefinition("darwin", input).content).toContain("com.rixzkiye.codex-router");
     expect(renderServiceDefinition("win32", input).content).toContain("LeastPrivilege");
   });
