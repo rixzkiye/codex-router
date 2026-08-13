@@ -344,6 +344,21 @@ code {
   color: var(--text);
 }
 
+.section-action-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.configuration-form {
+  display: grid;
+  gap: 18px;
+}
+
+.configuration-form__actions {
+  justify-content: flex-end;
+}
+
 .provider-grid {
   display: grid;
   gap: 1px;
@@ -818,6 +833,8 @@ code {
 
 @media (max-width: 767px) {
   .platform-search { width: 100%; min-width: 0; }
+  .section-action-row { width: 100%; align-items: stretch; flex-direction: column; }
+  .section-action-row .button { width: 100%; }
   .platform-page .button-row { flex-wrap: wrap; }
   .platform-page .button-row .button { flex: 1 1 140px; }
   .installation-fields { grid-template-columns: 1fr; }

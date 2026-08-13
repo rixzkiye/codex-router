@@ -339,6 +339,7 @@ function fixturePaths(root: string): ManagedPaths {
     manifestFile: path.join(root, "state", "setup-manifest.json"),
     mcpManifestFile: path.join(root, "state", "mcp-manifest.json"),
     controlTokenFile: path.join(root, "state", "control-token"),
+    credentialsFile: path.join(root, "config", "credentials.json"),
     serviceFile: path.join(root, "service", "codex-router.service"),
     logFile: path.join(root, "state", "logs", "router.log")
   };

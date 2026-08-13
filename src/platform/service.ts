@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
-import type { InferenceConfig, InferenceProviderConfig } from "../config.js";
+import { inferenceConfigSchema, inferenceModelConfigSchema, inferenceProviderConfigSchema, type InferenceConfig, type InferenceModelConfig, type InferenceProviderConfig } from "../config.js";
 import { RouterError } from "../errors.js";
 import { newId } from "../security.js";
 import type { Registry } from "../store/registry.js";
+import type { CredentialStore } from "./credentials.js";
 import { generatePlatformArtifacts } from "./artifacts.js";
 import { loginLaunch, observeAuthentication, runOfficialCli, type AuthenticationObservation, type LoginLaunch } from "./auth.js";
 import { builtinProviders, configuredModels, registryHash } from "./builtin-registry.js";
@@ -19,10 +20,12 @@ import type {
   ModelDefinition,
   ModelProjection,
   LocalModelProjection,
+  ModelConfigurationInput,
   PlatformEvidence,
   PlatformMutationInput,
   PlatformOperation,
   PlatformOperationKind,
+  ProviderConfigurationInput,
   ProviderDefinition,
   ProviderProjection,
   RoutingDecision
@@ -30,29 +33,67 @@ import type {
 
 type Row = Record<string, unknown>;
 
+const USER_OVERLAY_KEY = "platform:user-configuration-overlay";
+
+interface UserConfigurationOverlay {
+  version: 1;
+  gateway?: {
+    callerTokenRef: string;
+    host?: "127.0.0.1" | "::1" | "localhost";
+    port?: number;
+  };
+  providers: InferenceProviderConfig[];
+  models: InferenceModelConfig[];
+}
+
+interface OverlayReadback {
+  overlay: UserConfigurationOverlay;
+  version: number;
+}
+
+interface ConfigurationState {
+  config: InferenceConfig | undefined;
+  providers: ProviderDefinition[];
+  models: ModelDefinition[];
+  overlay: UserConfigurationOverlay;
+  overlayVersion: number;
+  manifest: ReturnType<typeof generatePlatformArtifacts>["manifest"] | null;
+}
+
+const EMPTY_OVERLAY: UserConfigurationOverlay = Object.freeze({ version: 1, providers: [], models: [] });
+
 const UNKNOWN_EVIDENCE = Object.freeze({ state: "unknown" as const, message: "No authoritative observation is available.", checkedAt: null });
 
 export class PlatformService {
   readonly #db: Database.Database;
   readonly #registry: Registry;
-  readonly #config: InferenceConfig | undefined;
-  readonly #providers: ProviderDefinition[];
-  readonly #models: ModelDefinition[];
+  readonly #baseConfig: InferenceConfig | undefined;
+  #config: InferenceConfig | undefined;
+  #providers: ProviderDefinition[];
+  #models: ModelDefinition[];
+  #overlay: UserConfigurationOverlay;
+  #overlayVersion = 0;
   readonly #operationControllers = new Map<string, AbortController>();
   readonly #operationTasks = new Set<Promise<void>>();
   readonly #ollama: OllamaClient;
   readonly #installer = new InstallationManager();
-  readonly manifest: ReturnType<typeof generatePlatformArtifacts>["manifest"] | null;
+  readonly #credentialStore: CredentialStore | undefined;
+  manifest: ReturnType<typeof generatePlatformArtifacts>["manifest"] | null;
 
-  constructor(database: Database.Database, registry: Registry, config: InferenceConfig | undefined) {
+  constructor(database: Database.Database, registry: Registry, config: InferenceConfig | undefined, options: { credentialStore?: CredentialStore } = {}) {
     this.#db = database;
     this.#registry = registry;
-    this.#config = config;
-    this.#providers = effectiveProviders(config);
-    this.#models = configuredModels(config);
-    this.#ollama = new OllamaClient(config?.localModels.baseUrl);
+    this.#baseConfig = config;
+    this.#credentialStore = options.credentialStore;
+    const stored = this.#readOverlay();
+    this.#overlay = stored.overlay;
+    this.#overlayVersion = stored.version;
+    this.#config = composeInferenceConfig(this.#baseConfig, this.#overlay);
+    this.#providers = effectiveProviders(this.#config);
+    this.#models = configuredModels(this.#config);
+    this.#ollama = new OllamaClient(this.#config?.localModels.baseUrl);
     const hash = registryHash(this.#providers, this.#models);
-    this.manifest = config ? generatePlatformArtifacts(config, hash).manifest : null;
+    this.manifest = this.#config ? generatePlatformArtifacts(this.#config, hash).manifest : null;
     this.#synchronizeRegistry();
     this.#reconcileOperations();
   }
@@ -60,6 +101,110 @@ export class PlatformService {
   async close(): Promise<void> {
     for (const controller of this.#operationControllers.values()) controller.abort();
     await Promise.allSettled(this.#operationTasks);
+  }
+
+  /**
+   * Returns the effective, validated inference configuration. A second process
+   * (the inference edge) observes overlay changes through the shared database
+   * before it makes a routing decision.
+   */
+  inferenceConfig(): InferenceConfig | undefined {
+    this.#refreshOverlayIfChanged();
+    return this.#config;
+  }
+
+  configureProvider(actor: string, input: ProviderConfigurationInput): PlatformOperation {
+    const replay = this.#operationReplay(actor, "settings-update", input.idempotencyKey);
+    if (replay) return replay;
+    const current = this.providers().find((provider) => provider.id === input.provider.id);
+    if (current && current.version !== input.expectedVersion) {
+      throw new RouterError("conflict", `Provider ${input.provider.id} changed from version ${input.expectedVersion} to ${current.version}`);
+    }
+    if (!current && input.expectedVersion !== 1) {
+      throw new RouterError("conflict", "A new provider must be created from the current registry snapshot");
+    }
+    if (input.initialModel && input.initialModel.providerId !== input.provider.id) {
+      throw new RouterError("invalid_request", "The initial model must belong to the provider being configured");
+    }
+
+    const overlay = mergeProviderOverlay(this.#overlay, input.provider, input.initialModel, input.gateway);
+    const config = composeInferenceConfig(this.#baseConfig, overlay);
+    if (!config) {
+      throw new RouterError(
+        "invalid_request",
+        "The first cloud connection needs a gateway token reference and one initial model. Use only env:VARIABLE references."
+      );
+    }
+
+    const operation = newOperation("settings-update", "provider", input.provider.id, actor, input);
+    const now = new Date().toISOString();
+    const previous = this.#configurationState();
+    try {
+      this.#versioned(() => {
+        this.#appendEvent("platform_operation_started", "provider", input.provider.id, operation.id, actor, {
+          kind: operation.kind,
+          expectedVersion: input.expectedVersion
+        });
+        this.#insertOperation(operation);
+        this.#appendEvent("provider_configuration_applied", "provider", input.provider.id, operation.id, actor, {
+          protocol: input.provider.protocol ?? "responses",
+          credentialReference: input.provider.credentialRef ?? null,
+          initialModel: input.initialModel?.id ?? null,
+          source: "user-overlay"
+        });
+        this.#writeOverlay(overlay, now);
+        this.#applyConfiguration(config, overlay);
+        this.#appendEvent("platform_operation_completed", "provider", input.provider.id, operation.id, actor, { source: "user-overlay" });
+        this.#db.prepare("UPDATE platform_operations SET state = 'completed', progress = 1, message = ?, result_json = ?, updated_at = ?, completed_at = ? WHERE id = ?")
+          .run("Provider configuration was validated and saved to the protected user overlay.", json({ providerId: input.provider.id }), now, now, operation.id);
+      });
+    } catch (error) {
+      this.#restoreConfigurationState(previous);
+      throw error;
+    }
+    return this.operation(operation.id);
+  }
+
+  configureModel(actor: string, input: ModelConfigurationInput): PlatformOperation {
+    const replay = this.#operationReplay(actor, "settings-update", input.idempotencyKey);
+    if (replay) return replay;
+    const current = this.models().find((model) => model.gatewayId === input.model.id);
+    if (current && current.version !== input.expectedVersion) {
+      throw new RouterError("conflict", `Model ${input.model.id} changed from version ${input.expectedVersion} to ${current.version}`);
+    }
+    if (!current && input.expectedVersion !== 1) {
+      throw new RouterError("conflict", "A new model must be created from the current registry snapshot");
+    }
+    if (!this.#config?.providers.some((provider) => provider.id === input.model.providerId)) {
+      throw new RouterError("invalid_request", `Configure provider ${input.model.providerId} before curating a model for it`);
+    }
+
+    const overlay = mergeModelOverlay(this.#overlay, input.model);
+    const config = composeInferenceConfig(this.#baseConfig, overlay);
+    if (!config) throw new RouterError("invalid_request", "The inference gateway is not configured yet");
+    const operation = newOperation("settings-update", "model", input.model.id, actor, input);
+    const now = new Date().toISOString();
+    const previous = this.#configurationState();
+    try {
+      this.#versioned(() => {
+        this.#appendEvent("platform_operation_started", "model", input.model.id, operation.id, actor, { kind: operation.kind, expectedVersion: input.expectedVersion });
+        this.#insertOperation(operation);
+        this.#appendEvent("model_curated", "model", input.model.id, operation.id, actor, {
+          providerId: input.model.providerId,
+          publication: input.model.publication,
+          source: "user-overlay"
+        });
+        this.#writeOverlay(overlay, now);
+        this.#applyConfiguration(config, overlay);
+        this.#appendEvent("platform_operation_completed", "model", input.model.id, operation.id, actor, { source: "user-overlay" });
+        this.#db.prepare("UPDATE platform_operations SET state = 'completed', progress = 1, message = ?, result_json = ?, updated_at = ?, completed_at = ? WHERE id = ?")
+          .run("Model definition was saved with conservative capabilities; validation remains a separate operation.", json({ modelId: input.model.id }), now, now, operation.id);
+      });
+    } catch (error) {
+      this.#restoreConfigurationState(previous);
+      throw error;
+    }
+    return this.operation(operation.id);
   }
 
   snapshot() {
@@ -262,6 +407,27 @@ export class PlatformService {
       signal.throwIfAborted();
       const authentication = await observeAuthentication(this.#provider(providerId)!);
       this.#finishAuthentication(operation, authentication);
+    });
+    return this.operation(operation.id);
+  }
+
+  setProviderCredential(actor: string, providerId: string, input: PlatformMutationInput): PlatformOperation {
+    const kind: PlatformOperationKind = "credential-set";
+    const replay = this.#operationReplay(actor, kind, input.idempotencyKey);
+    if (replay) return replay;
+    const provider = this.provider(providerId);
+    if (provider.version !== input.expectedVersion) throw new RouterError("conflict", `Provider ${providerId} has a newer projection`);
+    if (provider.credential.mechanism === "keyless") throw new RouterError("unsupported", `${provider.displayName} has no API key boundary`);
+    const reference = this.#configuredProvider(providerId)?.credentialRef ?? provider.credential.references[0];
+    if (!reference) throw new RouterError("invalid_request", `${provider.displayName} has no configured API key reference`);
+    if (!this.#credentialStore) throw new RouterError("unsupported", "Protected credential entry is unavailable for this Console process");
+    const operation = this.#createLockedOperation(kind, "provider", providerId, actor, input, `credential:${provider.canonicalProvider}`);
+    this.#trackOperation(operation, async (signal) => {
+      this.#progressOperation(operation, 0.1, "Waiting for the native secure credential prompt.");
+      const stored = await this.#credentialStore!.promptAndStore(reference, provider.displayName, signal);
+      this.#progressOperation(operation, 0.8, "Credential stored; reading authentication state.");
+      const authentication = await observeAuthentication(this.#provider(providerId)!);
+      this.#finishAuthentication(operation, authentication, { credential: stored });
     });
     return this.operation(operation.id);
   }
@@ -1217,6 +1383,70 @@ export class PlatformService {
     });
   }
 
+  #readOverlay(): OverlayReadback {
+    const row = this.#db.prepare("SELECT value_json, version FROM platform_settings WHERE key = ?").get(USER_OVERLAY_KEY) as Row | undefined;
+    if (!row) return { overlay: { ...EMPTY_OVERLAY, providers: [], models: [] }, version: 0 };
+    try {
+      const value = parse<UserConfigurationOverlay>(row.value_json);
+      if (value.version !== 1 || !Array.isArray(value.providers) || !Array.isArray(value.models)) throw new Error("unsupported overlay shape");
+      const providers = value.providers.map((provider) => inferenceProviderConfigSchema.parse(provider));
+      const models = value.models.map((model) => inferenceModelConfigSchema.parse(model));
+      return {
+        overlay: {
+          version: 1,
+          ...(value.gateway ? { gateway: value.gateway } : {}),
+          providers,
+          models
+        },
+        version: Number(row.version)
+      };
+    } catch {
+      // A stale local overlay must never prevent the control plane from starting.
+      return { overlay: { ...EMPTY_OVERLAY, providers: [], models: [] }, version: Number(row.version) };
+    }
+  }
+
+  #refreshOverlayIfChanged(): void {
+    const row = this.#db.prepare("SELECT version FROM platform_settings WHERE key = ?").get(USER_OVERLAY_KEY) as Row | undefined;
+    const version = Number(row?.version ?? 0);
+    if (version === this.#overlayVersion) return;
+    const readback = this.#readOverlay();
+    const config = composeInferenceConfig(this.#baseConfig, readback.overlay);
+    this.#applyConfiguration(config, readback.overlay, false);
+    this.#overlayVersion = readback.version;
+  }
+
+  #writeOverlay(overlay: UserConfigurationOverlay, now: string): void {
+    this.#db.prepare(
+      `INSERT INTO platform_settings(key, value_json, version, updated_at) VALUES (?, ?, 1, ?)
+       ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, version = platform_settings.version + 1, updated_at = excluded.updated_at`
+    ).run(USER_OVERLAY_KEY, json(overlay), now);
+    const row = this.#db.prepare("SELECT version FROM platform_settings WHERE key = ?").get(USER_OVERLAY_KEY) as Row;
+    this.#overlayVersion = Number(row.version);
+  }
+
+  #configurationState(): ConfigurationState {
+    return { config: this.#config, providers: this.#providers, models: this.#models, overlay: this.#overlay, overlayVersion: this.#overlayVersion, manifest: this.manifest };
+  }
+
+  #restoreConfigurationState(state: ConfigurationState): void {
+    this.#config = state.config;
+    this.#providers = state.providers;
+    this.#models = state.models;
+    this.#overlay = state.overlay;
+    this.#overlayVersion = state.overlayVersion;
+    this.manifest = state.manifest;
+  }
+
+  #applyConfiguration(config: InferenceConfig | undefined, overlay: UserConfigurationOverlay, inTransaction = true): void {
+    this.#config = config;
+    this.#overlay = overlay;
+    this.#providers = effectiveProviders(config);
+    this.#models = configuredModels(config);
+    this.manifest = config ? generatePlatformArtifacts(config, registryHash(this.#providers, this.#models)).manifest : null;
+    this.#synchronizeRegistry(inTransaction);
+  }
+
   #provider(id: string): ProviderDefinition | undefined {
     return this.#providers.find((provider) => provider.id === id);
   }
@@ -1225,11 +1455,11 @@ export class PlatformService {
     return this.#config?.providers.find((provider) => provider.id === id);
   }
 
-  #synchronizeRegistry(): void {
+  #synchronizeRegistry(inTransaction = false): void {
     const now = new Date().toISOString();
     const modelCounts = new Map<string, number>();
     for (const model of this.#models) modelCounts.set(model.providerVariant, (modelCounts.get(model.providerVariant) ?? 0) + 1);
-    const transaction = this.#db.transaction(() => {
+    const synchronize = () => {
       for (const definition of this.#providers) {
         const configured = this.#configuredProvider(definition.id);
         const definitionJson = json(definition);
@@ -1267,8 +1497,9 @@ export class PlatformService {
         ).run(definition.gatewayId, definitionJson, definitionHash, enabled ? 1 : 0, version,
           json({ mock: "unknown", live: "unknown", checkedAt: null, profileHash: definition.compatibilityHash }), now);
       }
-    });
-    transaction();
+    };
+    if (inTransaction) synchronize();
+    else this.#db.transaction(synchronize)();
   }
 
   #versioned(operation: () => void): void {
@@ -1351,6 +1582,45 @@ function customProvider(provider: InferenceProviderConfig): ProviderDefinition {
     localOnly: provider.keyless,
     publication: "experimental"
   };
+}
+
+function composeInferenceConfig(base: InferenceConfig | undefined, overlay: UserConfigurationOverlay): InferenceConfig | undefined {
+  const providers = mergeById(base?.providers ?? [], overlay.providers, (provider) => provider.id);
+  const models = mergeById(base?.models ?? [], overlay.models, (model) => model.id);
+  if (base) return inferenceConfigSchema.parse({ ...base, providers, models });
+  if (providers.length === 0 && models.length === 0) return undefined;
+  if (!overlay.gateway || models.length === 0) return undefined;
+  return inferenceConfigSchema.parse({
+    callerTokenRef: overlay.gateway.callerTokenRef,
+    host: overlay.gateway.host ?? "127.0.0.1",
+    ...(overlay.gateway.port === undefined ? {} : { port: overlay.gateway.port }),
+    providers,
+    models
+  });
+}
+
+function mergeProviderOverlay(
+  overlay: UserConfigurationOverlay,
+  provider: InferenceProviderConfig,
+  initialModel?: InferenceModelConfig,
+  gateway?: ProviderConfigurationInput["gateway"]
+): UserConfigurationOverlay {
+  return {
+    version: 1,
+    ...(gateway ? { gateway } : overlay.gateway ? { gateway: overlay.gateway } : {}),
+    providers: mergeById(overlay.providers, [provider], (entry) => entry.id),
+    models: initialModel ? mergeById(overlay.models, [initialModel], (entry) => entry.id) : overlay.models
+  };
+}
+
+function mergeModelOverlay(overlay: UserConfigurationOverlay, model: InferenceModelConfig): UserConfigurationOverlay {
+  return { ...overlay, models: mergeById(overlay.models, [model], (entry) => entry.id) };
+}
+
+function mergeById<T>(base: T[], overrides: T[], id: (entry: T) => string): T[] {
+  const result = new Map(base.map((entry) => [id(entry), entry]));
+  for (const entry of overrides) result.set(id(entry), entry);
+  return [...result.values()];
 }
 
 function authenticationProjection(definition: ProviderDefinition, configured: InferenceProviderConfig | undefined): ProviderProjection["authentication"] {

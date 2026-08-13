@@ -153,6 +153,80 @@ describe("Web Console gateway", () => {
     expect(afterLogout.status).toBe(403);
   });
 
+  it("configures a cloud provider and initial model through the same CSRF-protected UI boundary", async () => {
+    const harness = await createHarness();
+    const session = await authenticate(harness.gateway);
+    const configured = await mutate(harness.gateway, session, "/api/v1/providers/configure", {
+      idempotencyKey: "web-configure-provider-001",
+      expectedVersion: 1,
+      provider: {
+        id: "fixture-cloud",
+        displayName: "Fixture Cloud",
+        baseUrl: "https://api.fixture.invalid/v1",
+        credentialRef: "env:FIXTURE_CLOUD_KEY",
+        protocol: "responses",
+        requestProfile: "generic-openai"
+      },
+      gateway: { callerTokenRef: "env:PLATFORM_TEST_CALLER" },
+      initialModel: {
+        id: "fixture-cloud/coder",
+        providerId: "fixture-cloud",
+        upstreamModel: "fixture-coder",
+        enabled: false,
+        publication: "curated",
+        capabilities: {
+          input: ["text"], nativeImage: false, derivedImage: false, reasoningEfforts: [], defaultReasoningEffort: null,
+          tools: false, forcedToolChoice: false, parallelTools: false, structuredOutput: false,
+          standaloneSearch: false, compaction: false, collaboration: false
+        },
+        pricing: null
+      }
+    });
+    expect(configured.response.status).toBe(202);
+    expect((await waitForPlatformOperation(harness.gateway, session.cookie, configured.body.id)).state).toBe("completed");
+    const bootstrap = await fetch(`${harness.gateway.url}/api/v1/bootstrap`, { headers: { Cookie: session.cookie } });
+    const snapshot = await bootstrap.json() as { platform: { providers: Array<{ id: string; authBoundary: { references: string[] } }>; models: Array<{ gatewayId: string; enabled: boolean }> } };
+    expect(snapshot.platform.providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "fixture-cloud", authBoundary: expect.objectContaining({ references: ["env:FIXTURE_CLOUD_KEY"] }) })
+    ]));
+    expect(snapshot.platform.models).toEqual(expect.arrayContaining([
+      expect.objectContaining({ gatewayId: "fixture-cloud/coder", enabled: false })
+    ]));
+    expect(JSON.stringify(snapshot)).not.toContain("FIXTURE_CLOUD_KEY=");
+
+    const curated = await mutate(harness.gateway, session, "/api/v1/models/configure", {
+      idempotencyKey: "web-configure-model-001",
+      expectedVersion: 1,
+      model: {
+        id: "fixture-cloud/reviewer",
+        providerId: "fixture-cloud",
+        upstreamModel: "fixture-reviewer",
+        enabled: false,
+        publication: "curated",
+        capabilities: {
+          input: ["text"], nativeImage: false, derivedImage: false, reasoningEfforts: [], defaultReasoningEffort: null,
+          tools: false, forcedToolChoice: false, parallelTools: false, structuredOutput: false,
+          standaloneSearch: false, compaction: false, collaboration: false
+        },
+        pricing: null
+      }
+    });
+    expect(curated.response.status).toBe(202);
+    expect((await waitForPlatformOperation(harness.gateway, session.cookie, curated.body.id)).state).toBe("completed");
+
+    const refused = await mutate(harness.gateway, session, "/api/v1/providers/configure", {
+      idempotencyKey: "web-configure-provider-raw-secret",
+      expectedVersion: 1,
+      provider: {
+        id: "refused-cloud",
+        baseUrl: "https://api.fixture.invalid/v1",
+        credentialRef: "not-a-symbolic-reference",
+        protocol: "responses"
+      }
+    });
+    expect(refused.response.status).toBe(422);
+  });
+
   it("serves a strict same-origin shell and emits resumable redacted snapshots", async () => {
     const harness = await createHarness();
     const shell = await fetch(harness.gateway.url);

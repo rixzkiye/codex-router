@@ -10,7 +10,7 @@ import { RouterApplicationService } from "../src/application.js";
 import { CodexRouter } from "../src/router.js";
 import { SecretRedactor } from "../src/security.js";
 import { ConsoleApi } from "../web/src/api";
-import { LocalModelsPage, PlatformDiagnosticsPage, ProvidersPage, RoutingPage } from "../web/src/platform-pages";
+import { LocalModelsPage, ModelConfigurationPage, PlatformDiagnosticsPage, ProviderConfigurationPage, ProvidersPage, RoutingPage } from "../web/src/platform-pages";
 import type { BootstrapDto } from "../web/src/types";
 import { MockRuntimeAdapter, silentLogger, testConfig } from "./helpers.js";
 
@@ -64,6 +64,64 @@ describe("platform Console pages", () => {
     />);
     expect(screen.getByRole("heading", { level: 1, name: "Local Ollama" })).toBeVisible();
     expect(screen.getByRole("list", { name: "Provider onboarding progress" })).toHaveTextContent("keyless");
+  });
+
+  it("starts API-key entry as a native operation without putting a secret in the browser payload", async () => {
+    const api = new ConsoleApi();
+    const mutate = vi.spyOn(api, "mutate").mockResolvedValue({ accepted: true });
+    render(<ProvidersPage
+      api={api}
+      data={data}
+      connection="live"
+      navigate={vi.fn()}
+      providerId="deepseek"
+      refresh={vi.fn(async () => undefined)}
+    />);
+    fireEvent.click(screen.getByRole("button", { name: "Set API key" }));
+    await waitFor(() => expect(mutate).toHaveBeenCalledWith(
+      "/api/v1/providers/deepseek/credential",
+      "POST",
+      expect.objectContaining({ idempotencyKey: expect.any(String) })
+    ));
+    expect(JSON.stringify(mutate.mock.calls)).not.toContain("provider-secret-canary");
+  });
+
+  it("offers UI-only provider and model curation without accepting raw credential values", async () => {
+    const api = new ConsoleApi();
+    const mutate = vi.spyOn(api, "mutate").mockResolvedValue({ accepted: true });
+    const navigate = vi.fn();
+    render(<ProviderConfigurationPage api={api} data={data} connection="live" navigate={navigate} refresh={vi.fn(async () => undefined)} />);
+    fireEvent.change(screen.getByLabelText("Provider ID"), { target: { value: "fixture-cloud" } });
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Fixture Cloud" } });
+    fireEvent.change(screen.getByLabelText("Base URL"), { target: { value: "https://api.fixture.invalid/v1" } });
+    fireEvent.change(screen.getByLabelText("Credential reference"), { target: { value: "env:FIXTURE_CLOUD_KEY" } });
+    fireEvent.change(screen.getByLabelText("Initial model ID"), { target: { value: "fixture-cloud/coder" } });
+    fireEvent.change(screen.getByLabelText("Upstream model ID"), { target: { value: "fixture-coder" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save provider" }));
+    await waitFor(() => expect(mutate).toHaveBeenCalledWith("/api/v1/providers/configure", "POST", expect.objectContaining({
+      provider: expect.objectContaining({ credentialRef: "env:FIXTURE_CLOUD_KEY" }),
+      gateway: { callerTokenRef: "env:CODEX_ROUTER_INFERENCE_TOKEN" },
+      initialModel: expect.objectContaining({ id: "fixture-cloud/coder", enabled: false, publication: "curated" })
+    })));
+    expect(JSON.stringify(mutate.mock.calls)).not.toContain("fixture-secret");
+    cleanup();
+    const modelData = {
+      ...data,
+      platform: {
+        ...data.platform,
+        models: [{
+          gatewayId: "fixture-cloud/coder", publicSlug: "fixture-cloud/coder", upstreamId: "fixture-coder", providerVariant: "fixture-cloud",
+          displayName: "Fixture Coder", contextWindow: null, maxOutputTokens: null, provenance: "user-overlay", publication: "curated",
+          requestProfile: "generic-openai", compatibilityHash: "fixture", enabled: false, version: 1,
+          capabilities: { input: ["text"], nativeImage: false, derivedImage: false, reasoningEfforts: [], defaultReasoningEffort: null, tools: false, forcedToolChoice: false, parallelTools: false, structuredOutput: false, standaloneSearch: false, compaction: false, collaboration: false },
+          pricing: null,
+          compatibility: { mock: "unknown", live: "unknown", checkedAt: null, profileHash: "fixture" }
+        }]
+      }
+    } as BootstrapDto;
+    render(<ModelConfigurationPage api={api} data={modelData} connection="live" navigate={navigate} refresh={vi.fn(async () => undefined)} modelId="fixture-cloud/coder" />);
+    expect(screen.getByRole("heading", { level: 1, name: "Edit Fixture Coder" })).toBeVisible();
+    expect(screen.getByText(/New models are text-only/)).toBeVisible();
   });
 
   it("keeps local-model download distinct from discovery and explicit selection", () => {

@@ -1,3 +1,5 @@
+import type { InferenceModelConfig, InferenceProviderConfig } from "../config.js";
+
 export type ProviderKind =
   | "native"
   | "openai-compatible"
@@ -106,6 +108,7 @@ export type PlatformOperationKind =
   | "provider-validate"
   | "provider-login"
   | "provider-logout"
+  | "credential-set"
   | "provider-refresh"
   | "provider-cli-install"
   | "catalog-refresh"
@@ -183,6 +186,21 @@ export interface InferenceRequestRecord {
 export interface PlatformMutationInput {
   idempotencyKey: string;
   expectedVersion: number;
+}
+
+/** Browser-safe input: secret values never cross this boundary. */
+export interface ProviderConfigurationInput extends PlatformMutationInput {
+  provider: InferenceProviderConfig;
+  initialModel?: InferenceModelConfig;
+  gateway?: {
+    callerTokenRef: string;
+    host?: "127.0.0.1" | "::1" | "localhost";
+    port?: number;
+  };
+}
+
+export interface ModelConfigurationInput extends PlatformMutationInput {
+  model: InferenceModelConfig;
 }
 
 export interface DoctorCheck {
