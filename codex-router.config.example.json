@@ -1,0 +1,23 @@
+{
+  "databasePath": "./data/codex-router.sqlite",
+  "allowedWorktreeRoots": ["/absolute/path/to/worktrees"],
+  "maxWaitMs": 30000,
+  "leaseTtlMs": 120000,
+  "idempotencyTtlMs": 604800000,
+  "runtimes": [
+    {
+      "id": "sol-main",
+      "adapter": "codex_app_server",
+      "provider": "openai",
+      "capabilityTiers": ["architect", "principal", "senior", "worker"],
+      "allowedModels": ["gpt-5.6-sol", "gpt-5.6-terra"],
+      "maxConcurrency": 2,
+      "codexHomeRef": "env:CODEX_ROUTER_SOL_MAIN_HOME",
+      "policyTags": ["local", "authorized"],
+      "enabled": true,
+      "command": "codex",
+      "args": ["app-server"],
+      "protocolVersion": "0.147.0"
+    }
+  ]
+}
