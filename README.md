@@ -124,6 +124,8 @@ pnpm preview:web
 
 Model catalogs and account status remain provider/runtime-authoritative. The Console shows unavailable, unknown, stale, restricted, and experimental states explicitly and disables mutations whose evidence preconditions are not met.
 
+Use **Providers → Add provider** to configure an endpoint, protocol, symbolic credential reference, and first conservative model without editing JSON. From a provider workbench, **Set API key** opens a native operating-system secure prompt owned by the local service; the key never enters the browser, request DTOs, SQLite, logs, or support bundles. Then choose **Validate readback**, **Enable provider**, run a model compatibility probe, and explicitly list the model in the picker. The managed Console creates its own independent gateway caller capability in a current-user-only credential store; it never displays that value.
+
 ### Platform operations
 
 The same application service used by the Console is available through the local CLI:

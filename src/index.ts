@@ -11,6 +11,7 @@ import { startInferenceGateway } from "./inference/server.js";
 import { createMcpServer } from "./mcp.js";
 import { runPlatformCli } from "./platform/cli.js";
 import { ManagedSetup } from "./platform/setup.js";
+import { ProtectedCredentialStore } from "./platform/credentials.js";
 import { CodexRouter } from "./router.js";
 import { createJsonLogger, SecretRedactor, type Logger } from "./security.js";
 import { RouterDatabase } from "./store/database.js";
@@ -39,6 +40,7 @@ async function main(): Promise<void> {
 }
 
 async function runMcp(args: string[], setup: ManagedSetup): Promise<void> {
+  await new ProtectedCredentialStore(setup.paths.credentialsFile).hydrate();
   const configPath = await configPathFor(args, setup);
   const { router, application, logger } = await createApplication(configPath);
   const server = createMcpServer(application, logger.redactor);
@@ -54,7 +56,10 @@ async function runMcp(args: string[], setup: ManagedSetup): Promise<void> {
 async function runWeb(args: string[], setup: ManagedSetup, open: boolean): Promise<void> {
   const configPath = await configPathFor(args, setup);
   const logFile = option(args, "--log-file");
-  const { router, application, logger } = await createApplication(configPath, logFile);
+  const credentials = new ProtectedCredentialStore(setup.paths.credentialsFile);
+  await credentials.ensureGenerated("env:CODEX_ROUTER_INFERENCE_TOKEN");
+  await credentials.hydrate();
+  const { router, application, logger } = await createApplication(configPath, logFile, credentials);
   const controlTokenFile = option(args, "--control-token-file");
   const controlToken = controlTokenFile ? (await readFile(controlTokenFile, "utf8")).trim() : undefined;
   const gateway = await startWebGateway(application, logger.redactor, logger.value, {
@@ -75,15 +80,17 @@ async function runWeb(args: string[], setup: ManagedSetup, open: boolean): Promi
 }
 
 async function runInference(args: string[], setup: ManagedSetup): Promise<void> {
+  await new ProtectedCredentialStore(setup.paths.credentialsFile).hydrate();
   const configPath = await configPathFor(args, setup);
   const redactor = new SecretRedactor();
   const logger = createJsonLogger(redactor);
   const config = await loadConfig(configPath);
-  if (!config.inference) throw new Error("Inference gateway configuration is missing");
   const database = new RouterDatabase(config.databasePath);
   const registry = new Registry(database);
   const platform = new PlatformService(database.connection, registry, config.inference);
-  const gateway = await startInferenceGateway(config.inference, redactor, logger, {
+  const inference = platform.inferenceConfig();
+  if (!inference) throw new Error("Inference gateway configuration is missing. Configure a provider and initial model in the Console first.");
+  const gateway = await startInferenceGateway(inference, redactor, logger, {
     ...(option(args, "--host") ? { host: option(args, "--host")! } : {}),
     ...(numericOption(args, "--port") === undefined ? {} : { port: numericOption(args, "--port")! }),
     platform
@@ -99,6 +106,7 @@ async function runInference(args: string[], setup: ManagedSetup): Promise<void> 
 }
 
 async function runPlatform(args: string[], setup: ManagedSetup): Promise<void> {
+  await new ProtectedCredentialStore(setup.paths.credentialsFile).hydrate();
   const targetUsesConfigFlag = ["install", "installation"].includes(args[0] ?? "")
     && ["plan", "apply"].includes(args[1] ?? "status");
   const routerConfigFlag = args.includes("--router-config")
@@ -120,7 +128,7 @@ async function runPlatform(args: string[], setup: ManagedSetup): Promise<void> {
   }
 }
 
-async function createApplication(configPath: string, logFile?: string): Promise<{
+async function createApplication(configPath: string, logFile?: string, credentialStore?: ProtectedCredentialStore): Promise<{
   router: CodexRouter;
   application: RouterApplicationService;
   logger: { value: Logger; redactor: SecretRedactor; close(): void };
@@ -133,7 +141,7 @@ async function createApplication(configPath: string, logFile?: string): Promise<
   }
   const logger = createJsonLogger(redactor, stream ? (line) => stream!.write(line) : undefined);
   const config = await loadConfig(configPath);
-  const router = await CodexRouter.create(config, { logger, redactor });
+  const router = await CodexRouter.create(config, { logger, redactor, ...(credentialStore ? { credentialStore } : {}) });
   return {
     router,
     application: new RouterApplicationService(router, redactor),

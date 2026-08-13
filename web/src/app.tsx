@@ -44,8 +44,10 @@ import {
 import {
   AccountsPage,
   LocalModelsPage,
+  ModelConfigurationPage,
   ModelsPage,
   PlatformDiagnosticsPage,
+  ProviderConfigurationPage,
   ProvidersPage,
   RequestsPage,
   RoutingPage,
@@ -180,9 +182,16 @@ function renderRoute(pathname: string, props: PageProps): ReactNode {
   if (pathname === "/agents/monitor") return <MonitorPage {...props} />;
   if (/^\/agents\/[^/]+$/.test(pathname)) return <AgentDetailPage {...props} agentId={pathname.split("/")[2]!} />;
   if (pathname === "/attention") return <AttentionPage {...props} />;
+  if (pathname === "/providers/new") return <ProviderConfigurationPage {...props} />;
+  if (/^\/providers\/[^/]+\/configure$/.test(pathname)) return <ProviderConfigurationPage {...props} providerId={decodeURIComponent(pathname.split("/")[2]!)} />;
   if (pathname === "/providers") return <ProvidersPage {...props} />;
   if (/^\/providers\/[^/]+$/.test(pathname)) return <ProvidersPage {...props} providerId={decodeURIComponent(pathname.split("/")[2]!)} />;
   if (pathname === "/accounts") return <AccountsPage {...props} />;
+  if (pathname === "/models/new") {
+    const providerId = new URLSearchParams(window.location.search).get("provider");
+    return <ModelConfigurationPage {...props} {...(providerId ? { providerId } : {})} />;
+  }
+  if (/^\/models\/[^/]+\/configure$/.test(pathname)) return <ModelConfigurationPage {...props} modelId={decodeURIComponent(pathname.split("/")[2]!)} />;
   if (pathname === "/models") return <ModelsPage {...props} />;
   if (/^\/models\/[^/]+$/.test(pathname)) return <ModelsPage {...props} modelId={decodeURIComponent(pathname.split("/")[2]!)} />;
   if (pathname === "/routing") return <RoutingPage {...props} />;

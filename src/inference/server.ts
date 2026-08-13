@@ -80,8 +80,6 @@ export async function startInferenceGateway(
   redactor.addSecret(callerToken);
   const compactionKey = config.compaction ? resolveSecretReference(config.compaction.integrityKeyRef) : null;
   if (compactionKey) redactor.addSecret(compactionKey);
-  const providers = new Map(config.providers.map((provider) => [provider.id, provider]));
-  const models = new Map(config.models.map((model) => [model.id, model]));
   const visionBridge = new VisionBridge(
     config.visionBridge,
     options.visionEngines ?? createConfiguredVisionEngines(config, redactor)
@@ -113,10 +111,11 @@ export async function startInferenceGateway(
     response.setHeader("X-Content-Type-Options", "nosniff");
 
     if (request.method === "GET" && url.pathname === "/health") {
+      const effective = options.platform?.inferenceConfig() ?? config;
       sendJson(response, 200, {
         status: "ok",
-        providers: config.providers.length,
-        models: config.models.length
+        providers: effective.providers.length,
+        models: effective.models.length
       });
       return;
     }
@@ -125,9 +124,11 @@ export async function startInferenceGateway(
     requireCallerAuth(request, callerToken);
 
     if (request.method === "GET" && ["/models", "/v1/models"].includes(url.pathname)) {
+      const effective = options.platform?.inferenceConfig() ?? config;
+      const providers = new Map(effective.providers.map((provider) => [provider.id, provider]));
       sendJson(response, 200, {
         object: "list",
-        data: config.models
+        data: effective.models
           .filter((model) => routeEligibility(model, providers.get(model.providerId), options.platform) === "enabled")
           .map((model) => ({
           id: model.id,
@@ -145,13 +146,16 @@ export async function startInferenceGateway(
     }
 
     const startedAt = Date.now();
+    const effective = options.platform?.inferenceConfig() ?? config;
+    const providers = new Map(effective.providers.map((provider) => [provider.id, provider]));
+    const models = new Map(effective.models.map((model) => [model.id, model]));
     const routed = await routeRequest(
       request,
-      config.maxBodyBytes,
+      effective.maxBodyBytes,
       models,
       providers,
       upstreamRoute,
-      config,
+      effective,
       visionBridge,
       compactionKey,
       options.platform
@@ -194,7 +198,7 @@ export async function startInferenceGateway(
     let semanticOutputObserved = false;
     let terminalError: string | null = null;
     try {
-      const target = upstreamTarget(config, routed.provider, upstreamRoute);
+      const target = upstreamTarget(effective, routed.provider, upstreamRoute);
       const upstream = await fetch(target.url, {
         method: "POST",
         headers: upstreamHeaders(request.headers, routed, redactor, target.translationCapability),

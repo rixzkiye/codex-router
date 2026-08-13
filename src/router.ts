@@ -23,6 +23,7 @@ import { ExternalProcessAdapter } from "./runtime/external-process.js";
 import type { RuntimeAdapter, RuntimeTaskContext } from "./runtime/types.js";
 import { WorktreeInspector } from "./worktree.js";
 import { PlatformService } from "./platform/service.js";
+import type { CredentialStore } from "./platform/credentials.js";
 
 const NONTERMINAL = [
   "queued",
@@ -36,6 +37,7 @@ const NONTERMINAL = [
 
 export interface RouterDependencies {
   adapters?: Map<string, RuntimeAdapter>;
+  credentialStore?: CredentialStore;
   logger: Logger;
   redactor: SecretRedactor;
 }
@@ -57,11 +59,14 @@ export class CodexRouter {
     private readonly redactor: SecretRedactor,
     database: RouterDatabase,
     worktrees: WorktreeInspector,
-    adapters: Map<string, RuntimeAdapter>
+    adapters: Map<string, RuntimeAdapter>,
+    credentialStore?: CredentialStore
   ) {
     this.#database = database;
     this.registry = new Registry(database);
-    this.platform = new PlatformService(database.connection, this.registry, config.inference);
+    this.platform = new PlatformService(database.connection, this.registry, config.inference, {
+      ...(credentialStore ? { credentialStore } : {})
+    });
     this.#worktrees = worktrees;
     this.#scheduler = new Scheduler(this.registry);
     this.#distiller = new ResultDistiller(this.registry, worktrees);
@@ -78,7 +83,8 @@ export class CodexRouter {
       dependencies.redactor,
       database,
       worktrees,
-      adapters
+      adapters,
+      dependencies.credentialStore
     );
     router.#registerRuntimes();
     router.#subscribeAdapters();

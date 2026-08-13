@@ -109,6 +109,7 @@ function cliHarness(existing: SetupManifest | null, options: { serviceRunning?: 
       manifestFile: "/state/setup-manifest.json",
       mcpManifestFile: "/state/mcp-manifest.json",
       controlTokenFile: "/state/control-token",
+      credentialsFile: "/config/credentials.json",
       serviceFile: "/service/codex-router.service",
       logFile: "/state/router.log"
     }

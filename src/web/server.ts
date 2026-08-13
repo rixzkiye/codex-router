@@ -13,6 +13,7 @@ import {
   agentStartRequestSchema,
   agentSteerRequestSchema
 } from "../domain.js";
+import { inferenceModelConfigSchema, inferenceProviderConfigSchema } from "../config.js";
 import { asRouterError, RouterError } from "../errors.js";
 import type { RouterApplicationService } from "../application.js";
 import { newId, type Logger, type SecretRedactor } from "../security.js";
@@ -24,6 +25,21 @@ const platformMutationSchema = z.object({
   expectedVersion: z.number().int().positive()
 });
 const consentMutationSchema = platformMutationSchema.extend({ consent: z.literal(true) });
+const gatewayConfigurationSchema = z.object({
+  callerTokenRef: z.string().regex(/^env:[A-Z][A-Z0-9_]*$/),
+  host: z.enum(["127.0.0.1", "::1", "localhost"]).optional(),
+  port: z.number().int().min(0).max(65_535).optional()
+});
+const providerConfigurationSchema = platformMutationSchema.extend({
+  provider: inferenceProviderConfigSchema,
+  initialModel: inferenceModelConfigSchema.optional(),
+  gateway: gatewayConfigurationSchema.optional()
+}).superRefine((input, context) => {
+  if (input.initialModel && input.initialModel.providerId !== input.provider.id) {
+    context.addIssue({ code: "custom", path: ["initialModel", "providerId"], message: "Initial model must use the configured provider ID" });
+  }
+});
+const modelConfigurationSchema = platformMutationSchema.extend({ model: inferenceModelConfigSchema });
 const installationTargetSchema = z.object({
   root: z.string().min(1).max(4_096),
   version: z.string().min(1).max(200),
@@ -349,6 +365,21 @@ async function handleApi(
     sendJson(response, 200, { providers: application.providers() });
     return;
   }
+  if (method === "POST" && pathName === "/api/v1/providers/configure") {
+    const { initialModel, gateway, ...input } = providerConfigurationSchema.parse(await readJson(request));
+    sendJson(response, 202, application.configureProvider(callerScope, {
+      ...input,
+      ...(initialModel ? { initialModel } : {}),
+      ...(gateway ? {
+        gateway: {
+          callerTokenRef: gateway.callerTokenRef,
+          ...(gateway.host ? { host: gateway.host } : {}),
+          ...(gateway.port === undefined ? {} : { port: gateway.port })
+        }
+      } : {})
+    }));
+    return;
+  }
   const providerMatch = pathName.match(/^\/api\/v1\/providers\/([^/]+)(?:\/(.*))?$/);
   if (providerMatch) {
     const providerId = decodeURIComponent(providerMatch[1]!);
@@ -359,6 +390,10 @@ async function handleApi(
     }
     if (method === "POST" && child === "validate") {
       sendJson(response, 202, application.validateProvider(callerScope, providerId, platformMutationSchema.parse(await readJson(request))));
+      return;
+    }
+    if (method === "POST" && child === "credential") {
+      sendJson(response, 202, application.setProviderCredential(callerScope, providerId, platformMutationSchema.parse(await readJson(request))));
       return;
     }
     if (method === "GET" && child === "login") {
@@ -423,6 +458,10 @@ async function handleApi(
   }
   if (method === "GET" && pathName === "/api/v1/models") {
     sendJson(response, 200, { models: application.modelsPlatform(), runtimes: application.models() });
+    return;
+  }
+  if (method === "POST" && pathName === "/api/v1/models/configure") {
+    sendJson(response, 202, application.configureModel(callerScope, modelConfigurationSchema.parse(await readJson(request))));
     return;
   }
   const modelMatch = pathName.match(/^\/api\/v1\/models\/([^/]+)(?:\/(.*))?$/);

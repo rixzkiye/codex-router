@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -8,14 +8,22 @@ import { inferenceConfigSchema } from "../src/config.js";
 import { PlatformService } from "../src/platform/service.js";
 import { RouterDatabase } from "../src/store/database.js";
 import { Registry } from "../src/store/registry.js";
+import type { CredentialStore } from "../src/platform/credentials.js";
 
 describe("PlatformService", () => {
   let database: RouterDatabase;
   let service: PlatformService;
+  let credentialStore: CredentialStore;
 
   beforeEach(() => {
     process.env.PLATFORM_TEST_CALLER = "caller-token-with-at-least-thirty-two-bytes";
     process.env.DEEPSEEK_API_KEY = "provider-secret-canary";
+    credentialStore = {
+      promptAndStore: vi.fn(async (reference: string) => {
+        process.env.DEEPSEEK_API_KEY = "provider-secret-canary";
+        return { reference, source: "protected-router-store" as const };
+      })
+    };
     const inference = inferenceConfigSchema.parse({
       callerTokenRef: "env:PLATFORM_TEST_CALLER",
       host: "127.0.0.1",
@@ -31,7 +39,7 @@ describe("PlatformService", () => {
     });
     database = new RouterDatabase(":memory:");
     const registry = new Registry(database);
-    service = new PlatformService(database.connection, registry, inference);
+    service = new PlatformService(database.connection, registry, inference, { credentialStore });
   });
 
   afterEach(async () => {
@@ -51,6 +59,61 @@ describe("PlatformService", () => {
     expect(persisted).not.toContain("provider-secret-canary");
   });
 
+  it("persists a browser-safe provider and model overlay, then reads it back after restart", async () => {
+    const localDatabase = new RouterDatabase(":memory:");
+    const first = new PlatformService(localDatabase.connection, new Registry(localDatabase), undefined);
+    try {
+      const deepseek = first.provider("deepseek");
+      const operation = first.configureProvider("test-actor", {
+        idempotencyKey: "configure-deepseek-from-ui-001",
+        expectedVersion: deepseek.version,
+        provider: {
+          id: "deepseek",
+          displayName: "DeepSeek API",
+          baseUrl: "https://api.deepseek.com/v1",
+          credentialRef: "env:DEEPSEEK_API_KEY",
+          keyless: false,
+          protocol: "responses",
+          requestProfile: "deepseek"
+        },
+        gateway: { callerTokenRef: "env:PLATFORM_TEST_CALLER" },
+        initialModel: {
+          id: "deepseek/reasoner",
+          providerId: "deepseek",
+          upstreamModel: "deepseek-reasoner",
+          enabled: false,
+          publication: "curated",
+          capabilities: {
+            input: ["text"], nativeImage: false, derivedImage: false, reasoningEfforts: [], defaultReasoningEffort: null,
+            tools: false, forcedToolChoice: false, parallelTools: false, structuredOutput: false,
+            standaloneSearch: false, compaction: false, collaboration: false
+          },
+          pricing: null
+        }
+      });
+      expect(operation.state).toBe("completed");
+      expect(first.inferenceConfig()).toMatchObject({
+        callerTokenRef: "env:PLATFORM_TEST_CALLER",
+        providers: [expect.objectContaining({ id: "deepseek", credentialRef: "env:DEEPSEEK_API_KEY" })],
+        models: [expect.objectContaining({ id: "deepseek/reasoner", enabled: false })]
+      });
+      const persisted = JSON.stringify(localDatabase.connection.prepare("SELECT * FROM platform_settings WHERE key = ?").get("platform:user-configuration-overlay"));
+      expect(persisted).toContain("env:DEEPSEEK_API_KEY");
+      expect(persisted).not.toContain("provider-secret-canary");
+      await first.close();
+      const restarted = new PlatformService(localDatabase.connection, new Registry(localDatabase), undefined);
+      try {
+        expect(restarted.inferenceConfig()?.models).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: "deepseek/reasoner", providerId: "deepseek" })
+        ]));
+      } finally {
+        await restarted.close();
+      }
+    } finally {
+      localDatabase.close();
+    }
+  });
+
   it("records an event before a versioned provider mutation and replays the operation idempotently", () => {
     const provider = service.provider("deepseek");
     const input = { idempotencyKey: "enable-deepseek-001", expectedVersion: provider.version };
@@ -65,6 +128,23 @@ describe("PlatformService", () => {
     expect(events.map((event) => event.event_type)).toEqual([
       "platform_operation_started", "provider_enablement_changed", "platform_operation_completed"
     ]);
+  });
+
+  it("sets an API key through a native credential operation without recording the key", async () => {
+    delete process.env.DEEPSEEK_API_KEY;
+    const provider = service.provider("deepseek");
+    const operation = service.setProviderCredential("test-actor", provider.id, {
+      idempotencyKey: "set-deepseek-key-001", expectedVersion: provider.version
+    });
+    const completed = await service.waitForOperation(operation.id, 2_000);
+    expect(completed).toMatchObject({ kind: "credential-set", state: "completed" });
+    expect(credentialStore.promptAndStore).toHaveBeenCalledWith("env:DEEPSEEK_API_KEY", "DeepSeek API", expect.any(AbortSignal));
+    expect(service.provider("deepseek").authentication).toMatchObject({ state: "ready", source: "environment", reference: "env:DEEPSEEK_API_KEY" });
+    const persisted = JSON.stringify({
+      events: database.connection.prepare("SELECT * FROM platform_event_journal").all(),
+      operations: database.connection.prepare("SELECT * FROM platform_operations").all()
+    });
+    expect(persisted).not.toContain("provider-secret-canary");
   });
 
   it("validates authentication through a durable scoped lock with monotonic fencing", async () => {

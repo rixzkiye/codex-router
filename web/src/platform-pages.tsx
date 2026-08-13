@@ -16,6 +16,7 @@ import {
   KeyRound,
   LogOut,
   Network,
+  Plus,
   RefreshCcw,
   Route,
   Search,
@@ -26,7 +27,7 @@ import {
   WalletCards,
   Wrench
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
 import { ConsoleApiError, newIdempotencyKey } from "./api";
 import { Button, EmptyState, InlineNotice, MachineValue, Metric, Section, TimeValue } from "./components";
 import type {
@@ -60,7 +61,7 @@ export function ProvidersPage(props: PageProps & { providerId?: string }) {
         <Metric label="Ready" value={data.platform.summary.readyProviders} detail="authoritatively observed" />
         <Metric label="Needs review" value={data.platform.providers.filter((provider) => provider.authentication.state === "unknown").length} detail="unknown auth state" tone="attention" />
       </div>
-      <Section title="Provider registry" description="Catalog presence is not a readiness claim." action={<label className="platform-search"><span className="sr-only">Filter providers</span><Search aria-hidden="true" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter providers" /></label>}>
+      <Section title="Provider registry" description="Catalog presence is not a readiness claim." action={<div className="section-action-row"><label className="platform-search"><span className="sr-only">Filter providers</span><Search aria-hidden="true" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter providers" /></label><Button variant="primary" onClick={() => navigate("/providers/new")}><Plus aria-hidden="true" />Add provider</Button></div>}>
         <div className="provider-grid">
           {providers.map((provider) => (
             <button className="provider-card pressable" key={provider.id} onClick={() => navigate(`/providers/${encodeURIComponent(provider.id)}`)}>
@@ -84,7 +85,7 @@ function ProviderWorkbench({ api, data, connection, navigate, refresh, provider 
   const [error, setError] = useState<string | null>(null);
   const [loginInstruction, setLoginInstruction] = useState<string | null>(null);
   const models = data.platform.models.filter((model) => model.providerVariant === provider.id);
-  const run = async (action: "validate" | "discover" | "logout" | "enable" | "disable") => {
+  const run = async (action: "credential" | "validate" | "discover" | "logout" | "enable" | "disable") => {
     setPending(action); setError(null);
     try {
       await api.mutate(`/api/v1/providers/${encodeURIComponent(provider.id)}/${action}`, "POST", {
@@ -127,6 +128,10 @@ function ProviderWorkbench({ api, data, connection, navigate, refresh, provider 
             <Review term="Endpoint authority" value={provider.baseUrl ?? provider.baseUrlEnvironment ?? "Runtime-owned forwarder"} />
           </dl>
           <div className="button-row">
+            <Button onClick={() => navigate(`/providers/${encodeURIComponent(provider.id)}/configure`)}><Network aria-hidden="true" />Configure connection</Button>
+            {provider.authBoundary.mechanism !== "keyless" && provider.authBoundary.references.length
+              ? <Button pending={pending === "credential"} disabled={connection !== "live"} onClick={() => void run("credential")}><KeyRound aria-hidden="true" />Set API key</Button>
+              : null}
             <Button pending={pending === "validate"} disabled={connection !== "live"} onClick={() => void run("validate")}><RefreshCcw aria-hidden="true" />Validate readback</Button>
             {provider.authBoundary.interactiveTerminal && ["native-codex", "kimi-oauth", "grok-oauth", "commandcode"].includes(provider.id)
               ? <Button pending={pending === "login"} disabled={connection !== "live"} onClick={() => void showLogin()}><KeyRound aria-hidden="true" />Sign-in instructions</Button>
@@ -147,11 +152,131 @@ function ProviderWorkbench({ api, data, connection, navigate, refresh, provider 
           </div>
         </Section>
       </div>
-      <Section title="Model boundary" description="Discovery is evidence; it never auto-publishes.">
+      <Section title="Model boundary" description="Discovery is evidence; it never auto-publishes." action={<Button onClick={() => navigate(`/models/new?provider=${encodeURIComponent(provider.id)}`)}><Plus aria-hidden="true" />Add model</Button>}>
         {models.length ? <ModelRows models={models} navigate={navigate} /> : <EmptyState title="No curated models" description="This provider remains catalog-only until discovery and explicit curation produce model records." />}
       </Section>
     </PlatformPage>
   );
+}
+
+export function ProviderConfigurationPage(props: PageProps & { providerId?: string }) {
+  const { api, data, connection, navigate, refresh } = props;
+  const existing = props.providerId ? data.platform.providers.find((provider) => provider.id === props.providerId) : undefined;
+  const firstConnection = data.platform.models.length === 0;
+  const [form, setForm] = useState(() => ({
+    id: existing?.id ?? "",
+    displayName: existing?.displayName ?? "",
+    baseUrl: existing?.baseUrl ?? "https://api.example.com/v1",
+    credentialRef: existing?.authBoundary.references[0] ?? "env:PROVIDER_API_KEY",
+    protocol: existing?.protocol ?? "responses",
+    requestProfile: existing?.requestProfile ?? "generic-openai",
+    initialModelId: "",
+    initialUpstreamId: "",
+    callerTokenRef: "env:CODEX_ROUTER_INFERENCE_TOKEN"
+  }));
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const update = (key: keyof typeof form, value: string) => setForm((current) => ({ ...current, [key]: value }));
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const id = form.id.trim();
+    if (!id) { setError("Provider ID is required."); return; }
+    if (firstConnection && (!form.initialModelId.trim() || !form.initialUpstreamId.trim())) {
+      setError("The first connection needs one initial model and upstream model ID."); return;
+    }
+    setPending(true); setError(null);
+    try {
+      await api.mutate("/api/v1/providers/configure", "POST", {
+        idempotencyKey: newIdempotencyKey(),
+        expectedVersion: existing?.version ?? 1,
+        provider: {
+          id,
+          displayName: form.displayName.trim() || undefined,
+          baseUrl: form.baseUrl.trim(),
+          credentialRef: form.credentialRef.trim(),
+          protocol: form.protocol,
+          requestProfile: form.requestProfile
+        },
+        ...(firstConnection ? {
+          gateway: { callerTokenRef: form.callerTokenRef.trim() },
+          initialModel: conservativeModel(form.initialModelId.trim(), id, form.initialUpstreamId.trim())
+        } : {})
+      });
+      await refresh();
+      navigate(`/providers/${encodeURIComponent(id)}`);
+    } catch (caught) { setError(errorMessage(caught)); } finally { setPending(false); }
+  };
+  return <PlatformPage title={existing ? `Configure ${existing.displayName}` : "Add cloud provider"} eyebrow="Provider configuration" description="Save a safe provider reference and endpoint; credentials remain outside the browser." actions={<Button onClick={() => navigate(existing ? `/providers/${encodeURIComponent(existing.id)}` : "/providers")}>Cancel</Button>}>
+    {error ? <InlineNotice tone="danger" title="Configuration was not saved">{error}</InlineNotice> : null}
+    <InlineNotice tone="info" title="Secret boundary">Enter only a symbolic reference such as <code>env:OPENROUTER_API_KEY</code>. The Console cannot receive, store, or display the key value.</InlineNotice>
+    {firstConnection ? <InlineNotice tone="warning" title="First routed connection">Set a separate gateway caller-token reference and one initial model. Both remain disabled until validation and explicit publish.</InlineNotice> : null}
+    <form className="configuration-form" onSubmit={(event) => void submit(event)}>
+      <Section title="Provider authority" description="HTTPS endpoints and explicit protocol profiles keep routing truthful.">
+        <div className="form-grid">
+          <label className="field"><span className="field__label">Provider ID</span><input aria-label="Provider ID" className="text-input" value={form.id} readOnly={Boolean(existing)} onChange={(event) => update("id", event.target.value.toLowerCase())} placeholder="openrouter" autoComplete="off" /><span className="field__hint">Lowercase letters, digits, and hyphens.</span></label>
+          <label className="field"><span className="field__label">Display name</span><input aria-label="Display name" className="text-input" value={form.displayName} onChange={(event) => update("displayName", event.target.value)} placeholder="OpenRouter" autoComplete="off" /></label>
+          <label className="field"><span className="field__label">Base URL</span><input aria-label="Base URL" className="text-input" value={form.baseUrl} onChange={(event) => update("baseUrl", event.target.value)} placeholder="https://api.example.com/v1" inputMode="url" autoComplete="url" /></label>
+          <label className="field"><span className="field__label">Credential reference</span><input aria-label="Credential reference" className="text-input" value={form.credentialRef} onChange={(event) => update("credentialRef", normalizeSecretReference(event.target.value))} placeholder="env:PROVIDER_API_KEY" autoComplete="off" /></label>
+          <label className="field"><span className="field__label">Protocol</span><select aria-label="Protocol" value={form.protocol} onChange={(event) => update("protocol", event.target.value)}><option value="responses">Responses</option><option value="chat-completions">Chat Completions</option><option value="anthropic-messages">Anthropic Messages</option></select></label>
+          <label className="field"><span className="field__label">Request profile</span><select aria-label="Request profile" value={form.requestProfile} onChange={(event) => update("requestProfile", event.target.value)}>{REQUEST_PROFILES.map((profile) => <option key={profile} value={profile}>{profile}</option>)}</select></label>
+        </div>
+      </Section>
+      {firstConnection ? <Section title="Initial route" description="The inference gateway needs an authenticated caller boundary and one conservative model record.">
+        <div className="form-grid">
+          <label className="field"><span className="field__label">Gateway caller-token reference</span><input aria-label="Gateway caller-token reference" className="text-input" value={form.callerTokenRef} onChange={(event) => update("callerTokenRef", normalizeSecretReference(event.target.value))} placeholder="env:CODEX_ROUTER_INFERENCE_TOKEN" autoComplete="off" /></label>
+          <label className="field"><span className="field__label">Initial model ID</span><input aria-label="Initial model ID" className="text-input" value={form.initialModelId} onChange={(event) => update("initialModelId", event.target.value)} placeholder="openrouter/qwen3-coder" autoComplete="off" /></label>
+          <label className="field"><span className="field__label">Upstream model ID</span><input aria-label="Upstream model ID" className="text-input" value={form.initialUpstreamId} onChange={(event) => update("initialUpstreamId", event.target.value)} placeholder="qwen/qwen3-coder" autoComplete="off" /></label>
+        </div>
+      </Section> : null}
+      <div className="button-row configuration-form__actions"><Button type="submit" variant="primary" pending={pending} disabled={connection !== "live"}>{existing ? "Save provider configuration" : "Save provider"}</Button></div>
+    </form>
+  </PlatformPage>;
+}
+
+export function ModelConfigurationPage(props: PageProps & { modelId?: string; providerId?: string }) {
+  const { api, data, connection, navigate, refresh } = props;
+  const existing = props.modelId ? data.platform.models.find((model) => model.gatewayId === props.modelId) : undefined;
+  const [form, setForm] = useState(() => ({
+    id: existing?.gatewayId ?? "",
+    providerId: existing?.providerVariant ?? props.providerId ?? "",
+    upstreamId: existing?.upstreamId ?? "",
+    displayName: existing?.displayName ?? "",
+    contextWindow: existing?.contextWindow?.toString() ?? "",
+    maxOutputTokens: existing?.maxOutputTokens?.toString() ?? ""
+  }));
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const update = (key: keyof typeof form, value: string) => setForm((current) => ({ ...current, [key]: value }));
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!form.id.trim() || !form.providerId || !form.upstreamId.trim()) { setError("Model ID, provider, and upstream model ID are required."); return; }
+    setPending(true); setError(null);
+    try {
+      await api.mutate("/api/v1/models/configure", "POST", {
+        idempotencyKey: newIdempotencyKey(), expectedVersion: existing?.version ?? 1,
+        model: conservativeModel(form.id.trim(), form.providerId, form.upstreamId.trim(), form.displayName.trim(), form.contextWindow, form.maxOutputTokens)
+      });
+      await refresh();
+      navigate(`/models/${encodeURIComponent(form.id.trim())}`);
+    } catch (caught) { setError(errorMessage(caught)); } finally { setPending(false); }
+  };
+  return <PlatformPage title={existing ? `Edit ${existing.displayName}` : "Add model"} eyebrow="Model curation" description="Start from conservative, truthful capabilities; validation and publishing remain separate." actions={<Button onClick={() => navigate(existing ? `/models/${encodeURIComponent(existing.gatewayId)}` : "/models")}>Cancel</Button>}>
+    {error ? <InlineNotice tone="danger" title="Model was not saved">{error}</InlineNotice> : null}
+    <InlineNotice tone="info" title="Capability truth">New models are text-only, unverified, and hidden from the picker. Run a compatibility probe before publishing.</InlineNotice>
+    <form className="configuration-form" onSubmit={(event) => void submit(event)}>
+      <Section title="Model identity" description="Public and upstream IDs are deliberately separate.">
+        <div className="form-grid">
+          <label className="field"><span className="field__label">Gateway model ID</span><input aria-label="Gateway model ID" className="text-input" value={form.id} readOnly={Boolean(existing)} onChange={(event) => update("id", event.target.value)} placeholder="openrouter/qwen3-coder" autoComplete="off" /></label>
+          <label className="field"><span className="field__label">Provider</span><select aria-label="Provider" value={form.providerId} disabled={Boolean(existing)} onChange={(event) => update("providerId", event.target.value)}><option value="">Select configured provider</option>{data.platform.providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.displayName} ({provider.id})</option>)}</select></label>
+          <label className="field"><span className="field__label">Upstream model ID</span><input aria-label="Upstream model ID" className="text-input" value={form.upstreamId} onChange={(event) => update("upstreamId", event.target.value)} placeholder="qwen/qwen3-coder" autoComplete="off" /></label>
+          <label className="field"><span className="field__label">Display name</span><input aria-label="Display name" className="text-input" value={form.displayName} onChange={(event) => update("displayName", event.target.value)} placeholder="Qwen3 Coder" autoComplete="off" /></label>
+          <label className="field"><span className="field__label">Context window</span><input aria-label="Context window" className="text-input" value={form.contextWindow} onChange={(event) => update("contextWindow", event.target.value)} inputMode="numeric" placeholder="Unknown" /></label>
+          <label className="field"><span className="field__label">Max output tokens</span><input aria-label="Max output tokens" className="text-input" value={form.maxOutputTokens} onChange={(event) => update("maxOutputTokens", event.target.value)} inputMode="numeric" placeholder="Unknown" /></label>
+        </div>
+      </Section>
+      <div className="button-row configuration-form__actions"><Button type="submit" variant="primary" pending={pending} disabled={connection !== "live"}>{existing ? "Save model definition" : "Add model"}</Button></div>
+    </form>
+  </PlatformPage>;
 }
 
 export function AccountsPage({ data, navigate }: PageProps) {
@@ -180,7 +305,7 @@ export function ModelsPage(props: PageProps & { modelId?: string }) {
   const models = data.platform.models.filter((model) => `${model.displayName} ${model.gatewayId} ${model.providerVariant}`.toLowerCase().includes(query.toLowerCase()));
   return (
     <PlatformPage title="Models" eyebrow="Capability workbench" description="Picker visibility follows exact provider, profile, and compatibility evidence.">
-      <Section title="Effective catalog" description={`${data.platform.models.length} configured model records; no provider discovery is auto-published.`} action={<label className="platform-search"><Search aria-hidden="true" /><span className="sr-only">Filter models</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter models" /></label>}>
+      <Section title="Effective catalog" description={`${data.platform.models.length} configured model records; no provider discovery is auto-published.`} action={<div className="section-action-row"><label className="platform-search"><Search aria-hidden="true" /><span className="sr-only">Filter models</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter models" /></label><Button variant="primary" onClick={() => navigate("/models/new")}><Plus aria-hidden="true" />Add model</Button></div>}>
         {models.length ? <ModelRows models={models} navigate={navigate} /> : <EmptyState title="No matching models" description="Try another provider, slug, or upstream identifier." />}
       </Section>
     </PlatformPage>
@@ -214,7 +339,7 @@ function ModelWorkbench({ api, data, connection, navigate, refresh, model }: Pag
       {error ? <InlineNotice tone="danger" title="Picker state unchanged">{error}</InlineNotice> : null}
       <div className="model-hero">
         <div><span className="eyebrow">{model.publication.replaceAll("-", " ")}</span><h2>{model.displayName}</h2><p>Upstream <code>{model.upstreamId}</code> through <code>{model.requestProfile}</code></p></div>
-        <div className="button-row"><Button pending={pending} disabled={connection !== "live"} onClick={() => void probe()}><Wrench aria-hidden="true" />Run mock probe</Button><Button variant={model.enabled ? "danger" : "primary"} pending={pending} disabled={connection !== "live" || (!model.enabled && !provider.enabled)} onClick={() => void toggle()}>{model.enabled ? "Hide from picker" : "List in picker"}</Button></div>
+        <div className="button-row"><Button onClick={() => navigate(`/models/${encodeURIComponent(model.gatewayId)}/configure`)}><Network aria-hidden="true" />Edit definition</Button><Button pending={pending} disabled={connection !== "live"} onClick={() => void probe()}><Wrench aria-hidden="true" />Run mock probe</Button><Button variant={model.enabled ? "danger" : "primary"} pending={pending} disabled={connection !== "live" || (!model.enabled && !provider.enabled)} onClick={() => void toggle()}>{model.enabled ? "Hide from picker" : "List in picker"}</Button></div>
       </div>
       {!provider.enabled ? <InlineNotice tone="warning" title="Provider is disabled">Enable {provider.displayName} before publishing this model.</InlineNotice> : null}
       <div className="overview-grid">
@@ -482,6 +607,32 @@ function FlowStep({ icon, label, detail }: { icon: ReactNode; label: string; det
 }
 
 function Review({ term, value }: { term: string; value: string }) { return <div><dt>{term}</dt><dd>{value}</dd></div>; }
+const REQUEST_PROFILES = ["generic-openai", "anthropic", "deepseek", "kimi", "qwen", "glm", "gemini", "minimax", "grok", "ollama", "github-copilot", "opencode", "command-code", "meta"] as const;
+
+function conservativeModel(id: string, providerId: string, upstreamModel: string, displayName?: string, contextWindow?: string, maxOutputTokens?: string) {
+  const context = contextWindow?.trim() ? Number(contextWindow) : undefined;
+  const output = maxOutputTokens?.trim() ? Number(maxOutputTokens) : undefined;
+  return {
+    id,
+    providerId,
+    upstreamModel,
+    ...(displayName ? { displayName } : {}),
+    ...(Number.isInteger(context) && context! > 0 ? { contextWindow: context } : {}),
+    ...(Number.isInteger(output) && output! > 0 ? { maxOutputTokens: output } : {}),
+    enabled: false,
+    publication: "curated" as const,
+    capabilities: {
+      input: ["text" as const], nativeImage: false, derivedImage: false, reasoningEfforts: [], defaultReasoningEffort: null,
+      tools: false, forcedToolChoice: false, parallelTools: false, structuredOutput: false,
+      standaloneSearch: false, compaction: false, collaboration: false
+    },
+    pricing: null
+  };
+}
+function normalizeSecretReference(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.toLowerCase().startsWith("env:") ? `env:${trimmed.slice(4).toUpperCase()}` : value;
+}
 function tokens(value: number | null, estimated = false): string { return value === null ? "Unavailable" : `${value.toLocaleString()}${estimated ? " estimated" : " tokens"}`; }
 function localModelEvidence(state: LocalModelDto["state"]): EvidenceState {
   if (state === "validated") return "ready";

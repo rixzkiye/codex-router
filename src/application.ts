@@ -11,7 +11,7 @@ import type {
   PendingInteraction
 } from "./domain.js";
 import { RouterError } from "./errors.js";
-import type { ProviderProjection } from "./platform/types.js";
+import type { ModelConfigurationInput, ProviderConfigurationInput, ProviderProjection } from "./platform/types.js";
 import type { CodexRouter } from "./router.js";
 import type { SecretRedactor } from "./security.js";
 
@@ -312,6 +312,14 @@ export class RouterApplicationService {
     return this.redactor.redact(this.router.platform.validateProvider(actor, providerId, input));
   }
 
+  setProviderCredential(
+    actor: string,
+    providerId: string,
+    input: { idempotencyKey: string; expectedVersion: number }
+  ) {
+    return this.redactor.redact(this.router.platform.setProviderCredential(actor, providerId, input));
+  }
+
   providerLoginLaunch(providerId: string) {
     return this.redactor.redact(this.router.platform.providerLoginLaunch(providerId));
   }
@@ -340,6 +348,14 @@ export class RouterApplicationService {
     input: { idempotencyKey: string; expectedVersion: number }
   ) {
     return this.redactor.redact(this.router.platform.refreshProviderCatalog(actor, providerId, input));
+  }
+
+  configureProvider(actor: string, input: ProviderConfigurationInput) {
+    return this.redactor.redact(this.router.platform.configureProvider(actor, input));
+  }
+
+  configureModel(actor: string, input: ModelConfigurationInput) {
+    return this.redactor.redact(this.router.platform.configureModel(actor, input));
   }
 
   setModelEnabled(

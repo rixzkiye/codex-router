@@ -9,6 +9,7 @@ export interface ManagedPaths {
   readonly manifestFile: string;
   readonly mcpManifestFile: string;
   readonly controlTokenFile: string;
+  readonly credentialsFile: string;
   readonly serviceFile: string;
   readonly logFile: string;
 }
@@ -50,6 +51,7 @@ function finish(configRoot: string, stateRoot: string, serviceFile: string, logF
     manifestFile: path.join(stateRoot, "setup-manifest.json"),
     mcpManifestFile: path.join(stateRoot, "mcp-manifest.json"),
     controlTokenFile: path.join(stateRoot, "control-token"),
+    credentialsFile: path.join(configRoot, "credentials.json"),
     serviceFile,
     logFile
   };
