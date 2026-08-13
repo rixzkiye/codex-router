@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { runRouterCli, type RouterCliRuntime } from "../src/cli.js";
@@ -53,6 +56,27 @@ describe("Codex Router CLI dispatch", () => {
     expect(harness.runMcp).not.toHaveBeenCalled();
   });
 
+  it("uses an existing projects directory instead of the user home during unattended setup", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "codex-router-cli-home-"));
+    const projects = path.join(home, "projects");
+    await mkdir(projects);
+    const harness = cliHarness(null, { cwd: home, home });
+    await runRouterCli(["setup", "--yes", "--foreground", "--no-mcp"], harness.runtime);
+    expect(harness.setup.apply).toHaveBeenCalledWith({
+      worktreeRoot: projects,
+      background: false,
+      startAtLogin: false,
+      mcpEnabled: false
+    });
+  });
+
+  it("requires an explicit root instead of silently passing the user home to setup", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "codex-router-cli-empty-home-"));
+    const harness = cliHarness(null, { cwd: home, home });
+    await expect(runRouterCli(["setup", "--yes", "--foreground", "--no-mcp"], harness.runtime)).rejects.toThrow(/No dedicated projects or worktrees directory was found/);
+    expect(harness.setup.apply).not.toHaveBeenCalled();
+  });
+
   it("rejects setup options whose values are missing instead of silently using defaults", async () => {
     const harness = cliHarness(null);
     await expect(runRouterCli(["setup", "--yes", "--worktree-root", "--no-mcp"], harness.runtime)).rejects.toThrow(/--worktree-root requires a value/);
@@ -60,7 +84,7 @@ describe("Codex Router CLI dispatch", () => {
   });
 });
 
-function cliHarness(existing: SetupManifest | null, options: { serviceRunning?: boolean } = {}) {
+function cliHarness(existing: SetupManifest | null, options: { serviceRunning?: boolean; cwd?: string; home?: string } = {}) {
   const stdout = new PassThrough();
   let captured = "";
   stdout.on("data", (chunk) => { captured += chunk.toString(); });
@@ -107,7 +131,8 @@ function cliHarness(existing: SetupManifest | null, options: { serviceRunning?: 
   const openExternal = vi.fn();
   const runtime: RouterCliRuntime = {
     setup: setup as unknown as ManagedSetup,
-    cwd: "/projects",
+    cwd: options.cwd ?? "/projects",
+    home: options.home ?? "/home/router",
     stdin: Object.assign(new PassThrough(), { isTTY: false }),
     stdout,
     stderr: new PassThrough(),

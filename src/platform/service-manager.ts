@@ -179,7 +179,7 @@ export function renderUserService(paths: ManagedPaths, launch: ServiceLaunch): S
         "",
         "[Service]",
         `ExecStart=${systemdCommand([launch.nodeExecutable, ...webArgs])}`,
-        `WorkingDirectory=${systemdQuote(paths.stateRoot)}`,
+        `WorkingDirectory=${systemdPath(paths.stateRoot)}`,
         "Restart=on-failure",
         "RestartSec=3",
         "NoNewPrivileges=true",
@@ -250,6 +250,11 @@ function systemdCommand(args: readonly string[]): string {
 function systemdQuote(value: string): string {
   if (/\r|\n/.test(value)) throw new Error("Service arguments cannot contain newlines");
   return `"${value.replaceAll("%", "%%").replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+function systemdPath(value: string): string {
+  if (/\r|\n/.test(value)) throw new Error("Service paths cannot contain newlines");
+  return value.replaceAll("%", "%%");
 }
 
 function windowsArg(value: string): string {

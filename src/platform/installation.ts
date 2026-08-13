@@ -296,7 +296,7 @@ export function renderServiceDefinition(
         "",
         "[Service]",
         `ExecStart=${systemdEscape(args)}`,
-        `WorkingDirectory=${systemdQuote(input.stateRoot)}`,
+        `WorkingDirectory=${systemdPath(input.stateRoot)}`,
         "Restart=on-failure",
         "RestartSec=5",
         "NoNewPrivileges=true",
@@ -455,6 +455,11 @@ function normalizeHost(host: NodeJS.Platform): SupportedHost {
 
 function systemdQuote(value: string): string {
   return `\"${value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}\"`;
+}
+
+function systemdPath(value: string): string {
+  if (/\r|\n/.test(value)) throw new Error("Service paths cannot contain newlines");
+  return value.replaceAll("%", "%%");
 }
 
 function systemdEscape(args: string[]): string {
