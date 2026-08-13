@@ -81,6 +81,8 @@ export interface ProviderProjection extends ProviderDefinition {
     source: string | null;
     reference: string | null;
     checkedAt: string | null;
+    expiresAt?: string | null;
+    message?: string;
   };
   entitlement: { state: EvidenceState; message: string; checkedAt: string | null };
   health: { state: EvidenceState; message: string; checkedAt: string | null };
@@ -102,14 +104,32 @@ export type PlatformOperationKind =
   | "provider-enable"
   | "provider-disable"
   | "provider-validate"
+  | "provider-login"
+  | "provider-logout"
+  | "provider-refresh"
+  | "provider-cli-install"
   | "catalog-refresh"
+  | "native-catalog-refresh"
   | "model-enable"
   | "model-disable"
   | "compatibility-probe"
+  | "live-compatibility-probe"
   | "doctor"
   | "repair"
   | "support-bundle"
-  | "local-model";
+  | "local-model-discover"
+  | "local-model-download"
+  | "local-model-benchmark"
+  | "local-model-select"
+  | "local-model-unselect"
+  | "local-model-remove"
+  | "install-plan"
+  | "install-apply"
+  | "update"
+  | "rollback"
+  | "disable"
+  | "uninstall"
+  | "settings-update";
 
 export type PlatformOperationState = "pending" | "running" | "completed" | "failed" | "cancelled";
 
@@ -180,4 +200,57 @@ export interface CapabilityLedgerEntry {
   phase: number;
   owner: string;
   evidence: string;
+}
+
+export interface LocalModelProjection {
+  id: string;
+  runtimeId: string;
+  state: "discovered" | "downloading" | "installed" | "validated" | "failed" | "removing";
+  selected: boolean;
+  definition: {
+    sizeBytes: number | null;
+    digest: string | null;
+    modifiedAt: string | null;
+    capabilities: string[];
+    contextWindow: number | null;
+    details: Record<string, string>;
+  };
+  benchmark: {
+    completed: boolean;
+    durationMs: number;
+    outputTokens: number | null;
+    tokensPerSecond: number | null;
+    toolCallObserved: boolean;
+  } | null;
+  operationId: string | null;
+  version: number;
+  updatedAt: string;
+}
+
+export interface RoutingDecision {
+  requestId: string;
+  policyVersion: string;
+  catalogVersion: string;
+  quotaSnapshotVersion: string | null;
+  selected: { providerId: string; accountRefId: string | null; modelId: string; score: number };
+  candidates: Array<{
+    providerId: string;
+    accountRefId: string | null;
+    modelId: string;
+    eligible: boolean;
+    score: number;
+    reasons: string[];
+  }>;
+  createdAt: string;
+}
+
+export interface PlatformEvidence {
+  id: string;
+  capability: string;
+  category: "local-check" | "hosted-ci" | "security-review" | "accessibility-review" | "package" | "provider-live" | "install" | "deployment" | "live-health";
+  state: "pass" | "fail" | "blocked" | "unknown";
+  provenance: Record<string, unknown>;
+  observedAt: string;
+  expiresAt: string | null;
+  headSha: string | null;
 }

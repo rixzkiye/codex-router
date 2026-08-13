@@ -2,9 +2,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { gzipSync } from "node:zlib";
 import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
-import { inferenceConfigSchema, type InferenceConfig } from "../src/config.js";
+import { inferenceConfigSchema, inferenceModelConfigSchema, type InferenceConfig } from "../src/config.js";
 import { startInferenceGateway, type InferenceGateway } from "../src/inference/server.js";
 import { PlatformService } from "../src/platform/service.js";
+import type { VisionEngine } from "../src/platform/vision.js";
 import { SecretRedactor, type Logger } from "../src/security.js";
 import { RouterDatabase } from "../src/store/database.js";
 import { Registry } from "../src/store/registry.js";
@@ -12,6 +13,7 @@ import { Registry } from "../src/store/registry.js";
 const CALLER_TOKEN_ENV = "CODEX_ROUTER_TEST_INFERENCE_CALLER";
 const PROVIDER_KEY_ENV = "CODEX_ROUTER_TEST_INFERENCE_PROVIDER";
 const TRANSLATION_KEY_ENV = "CODEX_ROUTER_TEST_TRANSLATION";
+const COMPACTION_KEY_ENV = "CODEX_ROUTER_TEST_COMPACTION";
 const callerToken = "caller-token-that-is-long-enough";
 const providerKey = "provider-key-that-must-not-leak";
 
@@ -22,6 +24,7 @@ afterEach(async () => {
   delete process.env[CALLER_TOKEN_ENV];
   delete process.env[PROVIDER_KEY_ENV];
   delete process.env[TRANSLATION_KEY_ENV];
+  delete process.env[COMPACTION_KEY_ENV];
 });
 
 describe("model inference gateway", () => {
@@ -45,6 +48,7 @@ describe("model inference gateway", () => {
       data: [{ id: "public/model", object: "model", created: 0, owned_by: "fixture" }]
     });
     expect(upstream.requests).toHaveLength(0);
+
   });
 
   it("uses durable provider and model eligibility for catalog and dispatch", async () => {
@@ -89,6 +93,17 @@ describe("model inference gateway", () => {
     expect(disabledModel.status).toBe(409);
     expect(await disabledModel.json()).toMatchObject({ error: { code: "model_not_enabled" } });
     expect(upstream.requests).toHaveLength(0);
+
+    const currentModel = platform.model("public/model");
+    platform.setModelEnabled("test", currentModel.gatewayId, true, {
+      idempotencyKey: "enable-model-route",
+      expectedVersion: currentModel.version
+    });
+    const routed = await post(gateway, { model: "public/model", input: "record the decision" });
+    expect(routed.status).toBe(200);
+    expect(platform.routingDecisions(1)[0]).toMatchObject({
+      selected: { providerId: "fixture", accountRefId: "account:fixture", modelId: "public/model" }
+    });
   });
 
   it("rewrites the configured model, isolates credentials, and streams the response", async () => {
@@ -143,6 +158,110 @@ describe("model inference gateway", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ object: "response.compaction", model: "upstream-model" });
     expect(upstream.requests[0]!.url).toBe("/v1/responses/compact");
+  });
+
+  it("signs external compaction summaries and verifies them before continuation", async () => {
+    process.env[COMPACTION_KEY_ENV] = "compaction-integrity-key-with-at-least-thirty-two-bytes";
+    const upstream = await startUpstream(async (request, response) => {
+      const body = await readJson(request) as { input: unknown };
+      response.writeHead(200, { "Content-Type": "application/json" });
+      if (request.url?.endsWith("/responses/compact")) {
+        response.end(JSON.stringify({ object: "response.compaction", summary: "Keep the verified architecture decision." }));
+        return;
+      }
+      expect(body.input).toEqual([{
+        type: "message",
+        role: "assistant",
+        content: [{ type: "input_text", text: "[Router compaction summary; fixture/public/model]\nKeep the verified architecture decision." }]
+      }]);
+      response.end(JSON.stringify({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "continued" }] }] }));
+    });
+    const { gateway } = await startHarness(upstream.url, new CapturingLogger(), {
+      compaction: { integrityKeyRef: `env:${COMPACTION_KEY_ENV}`, maxEnvelopeBytes: 32 * 1024, maxSummaryBytes: 8 * 1024 }
+    });
+    const compacted = await fetch(`${gateway.url}/v1/responses/compact`, {
+      method: "POST",
+      headers: { ...authHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "public/model", input: [{ role: "user", content: "compact" }] })
+    });
+    expect(compacted.status).toBe(200);
+    const payload = await compacted.json() as { object: string; router_compaction: Record<string, unknown> };
+    expect(payload.object).toBe("codex_router.compaction");
+    expect(payload.router_compaction).toMatchObject({ type: "codex-router.compaction", version: 1 });
+    const continued = await post(gateway, { model: "public/model", input: [payload.router_compaction] });
+    expect(continued.status).toBe(200);
+  });
+
+  it("ages old tool results and restores namespaced tool calls at the gateway boundary", async () => {
+    const oldOutput = "a".repeat(2_048);
+    const recentOutput = "recent evidence";
+    const upstream = await startUpstream(async (request, response) => {
+      const body = await readJson(request) as { input: Array<{ output: string }>; tools: Array<{ name: string }> };
+      expect(body.tools[0]?.name).toBe("apps__search");
+      expect(body.input[0]?.output).toContain("codex-router aged tool result");
+      expect(body.input[1]?.output).toBe(recentOutput);
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({
+        status: "completed",
+        output: [{ type: "function_call", name: "apps__search", arguments: "{}" }]
+      }));
+    });
+    const { gateway } = await startHarness(upstream.url, new CapturingLogger(), {
+      maxBodyBytes: 16 * 1024,
+      toolResultAging: { enabled: true, preserveRecent: 1, minimumBytes: 1_024, headBytes: 128, tailBytes: 128 }
+    });
+    const response = await post(gateway, {
+      model: "public/model",
+      input: [
+        { type: "function_call_output", call_id: "old", output: oldOutput },
+        { type: "function_call_output", call_id: "recent", output: recentOutput }
+      ],
+      tools: [{ type: "function", namespace: "apps", name: "search", parameters: { type: "object", properties: {} } }]
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ output: [{ type: "function_call", namespace: "apps", name: "search" }] });
+  });
+
+  it("bridges image input once and forwards only the governed transcript to a text route", async () => {
+    let descriptions = 0;
+    const engine: VisionEngine = {
+      id: "fixture-vision",
+      source: "registry",
+      modelId: "public/vision",
+      async describe() {
+        descriptions += 1;
+        return "A terminal showing a passing verification run.";
+      }
+    };
+    const upstream = await startUpstream(async (request, response) => {
+      const body = await readJson(request);
+      expect(JSON.stringify(body)).not.toContain("input_image");
+      expect(JSON.stringify(body)).toContain("A terminal showing a passing verification run.");
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "ok" }] }] }));
+    });
+    const { gateway } = await startHarness(upstream.url, new CapturingLogger(), {
+      maxBodyBytes: 16 * 1024,
+      models: [
+        inferenceModelConfigSchema.parse({ id: "public/model", providerId: "fixture", upstreamModel: "upstream-model" }),
+        inferenceModelConfigSchema.parse({ id: "public/vision", providerId: "fixture", upstreamModel: "upstream-vision" })
+      ],
+      visionBridge: {
+        enabled: true,
+        engineModelIds: ["public/vision"],
+        fallback: false,
+        maxDataUrlBytes: 8 * 1024,
+        allowedRemoteHosts: [],
+        cacheEntries: 4
+      }
+    }, { visionEngines: [engine] });
+    const image = "data:image/png;base64,aGVsbG8=";
+    const response = await post(gateway, {
+      model: "public/model",
+      input: [{ role: "user", content: [{ type: "input_image", image_url: image }, { type: "input_image", image_url: image }] }]
+    });
+    expect(response.status).toBe(200);
+    expect(descriptions).toBe(1);
   });
 
   it("fails closed for unknown models, oversized bodies, browser traffic, and upstream errors", async () => {
@@ -333,12 +452,13 @@ describe("model inference gateway", () => {
 async function startHarness(
   upstreamUrl: string,
   logger: Logger = new CapturingLogger(),
-  override: Partial<InferenceConfig> = {}
+  override: Partial<InferenceConfig> = {},
+  gatewayOptions: { visionEngines?: VisionEngine[] } = {}
 ) {
   process.env[CALLER_TOKEN_ENV] = callerToken;
   process.env[PROVIDER_KEY_ENV] = providerKey;
   const config = inferenceConfigSchema.parse({ ...inferenceConfig(upstreamUrl), ...override });
-  const gateway = await startInferenceGateway(config, new SecretRedactor(), logger, { port: 0 });
+  const gateway = await startInferenceGateway(config, new SecretRedactor(), logger, { port: 0, ...gatewayOptions });
   closers.push(() => gateway.close());
   return { gateway };
 }

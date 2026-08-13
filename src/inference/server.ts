@@ -7,9 +7,20 @@ import type { InferenceConfig, InferenceModelConfig, InferenceProviderConfig } f
 import { resolveSecretReference } from "../config.js";
 import { RouterError } from "../errors.js";
 import { newId, type Logger, type SecretRedactor } from "../security.js";
+import {
+  ageToolResults,
+  createCompactionEnvelope,
+  flattenNamespaceTools,
+  normalizePlaintextCollaborationPayload,
+  parseCompactionEnvelope,
+  restoreNamespaceToolCalls,
+  type NamespaceMap,
+  type NamespaceTool
+} from "../platform/compatibility.js";
 import type { PlatformService } from "../platform/service.js";
 import { applyRequestProfile, semanticResponseState, semanticSseEvent, usageFromPayload } from "../platform/profiles.js";
 import type { InferenceRequestRecord } from "../platform/types.js";
+import { VisionBridge, type VisionEngine } from "../platform/vision.js";
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -32,6 +43,7 @@ export interface InferenceGatewayOptions {
   host?: string;
   port?: number;
   platform?: PlatformService;
+  visionEngines?: VisionEngine[];
 }
 
 export interface InferenceGateway {
@@ -45,6 +57,9 @@ interface RoutedRequest {
   provider: InferenceProviderConfig;
   profileHash: string;
   transformations: string[];
+  namespaceMap: NamespaceMap | null;
+  requirements: Array<"tools" | "images" | "structured-output" | "search" | "compaction" | "collaboration">;
+  route: "responses" | "responses/compact";
 }
 
 export async function startInferenceGateway(
@@ -63,8 +78,14 @@ export async function startInferenceGateway(
     throw new RouterError("unauthorized", "The inference caller token must contain at least 32 bytes");
   }
   redactor.addSecret(callerToken);
+  const compactionKey = config.compaction ? resolveSecretReference(config.compaction.integrityKeyRef) : null;
+  if (compactionKey) redactor.addSecret(compactionKey);
   const providers = new Map(config.providers.map((provider) => [provider.id, provider]));
   const models = new Map(config.models.map((model) => [model.id, model]));
+  const visionBridge = new VisionBridge(
+    config.visionBridge,
+    options.visionEngines ?? createConfiguredVisionEngines(config, redactor)
+  );
   const activeRequests = new Set<AbortController>();
   let origin = "";
   let closePromise: Promise<void> | undefined;
@@ -124,19 +145,36 @@ export async function startInferenceGateway(
     }
 
     const startedAt = Date.now();
-    const routed = await routeRequest(request, config.maxBodyBytes, models, providers, options.platform);
+    const routed = await routeRequest(
+      request,
+      config.maxBodyBytes,
+      models,
+      providers,
+      upstreamRoute,
+      config,
+      visionBridge,
+      compactionKey,
+      options.platform
+    );
     const attemptId = newId("attempt");
-    options.platform?.beginRequest({
+    const routingDecision = options.platform?.createRoutingDecision(requestId, {
+      requestedModel: routed.model.id,
+      require: routed.requirements
+    });
+    const requestRecord = {
       id: requestId,
       attemptId,
       callerClass: "responses-client",
       runtimeId: null,
       providerId: routed.provider.id,
-      accountRefId: routed.provider.canonicalProviderId ? `account:${routed.provider.canonicalProviderId}` : `account:${routed.provider.id}`,
+      accountRefId: routingDecision?.selected.accountRefId
+        ?? (routed.provider.keyless ? null : routed.provider.canonicalProviderId ? `account:${routed.provider.canonicalProviderId}` : `account:${routed.provider.id}`),
       modelId: routed.model.id,
       profileHash: routed.profileHash,
       startedAt: new Date().toISOString()
-    });
+    };
+    if (routingDecision) options.platform?.beginRoutedRequest(requestRecord, routingDecision);
+    else options.platform?.beginRequest(requestRecord);
     const controller = new AbortController();
     activeRequests.add(controller);
     const timeout = setTimeout(
@@ -196,7 +234,7 @@ export async function startInferenceGateway(
       }
       if ((upstream.headers.get("content-type") ?? "").toLowerCase().includes("text/event-stream")) {
         const observed = await relaySseWithPreflight(
-          upstream.body,
+          transformSseStream(upstream.body, routed.namespaceMap),
           response,
           upstream.status,
           config.preflightBytes,
@@ -212,6 +250,7 @@ export async function startInferenceGateway(
         const body = Buffer.from(await upstream.arrayBuffer());
         let parsed: unknown;
         try { parsed = JSON.parse(body.toString("utf8")); } catch { parsed = null; }
+        parsed = transformProviderResponse(parsed, routed, config, compactionKey);
         if (semanticResponseState(parsed) === "empty") {
           terminalError = "empty_completion";
           throw new GatewayError(502, "empty_completion", "Inference provider completed without usable semantic output");
@@ -221,8 +260,9 @@ export async function startInferenceGateway(
           options.platform?.markSemanticOutput(requestId);
         }
         usage = usageFromPayload(parsed);
-        response.writeHead(upstream.status, { "Content-Length": String(body.length) });
-        response.end(body);
+        const transformedBody = parsed === null ? body : Buffer.from(JSON.stringify(parsed), "utf8");
+        response.writeHead(upstream.status, { "Content-Length": String(transformedBody.length) });
+        response.end(transformedBody);
       }
     } catch (error) {
       const abortReason = controller.signal.reason;
@@ -292,6 +332,10 @@ async function routeRequest(
   maxBodyBytes: number,
   models: ReadonlyMap<string, InferenceModelConfig>,
   providers: ReadonlyMap<string, InferenceProviderConfig>,
+  route: "responses" | "responses/compact",
+  config: InferenceConfig,
+  visionBridge: VisionBridge,
+  compactionKey: string | null,
   platform?: PlatformService
 ): Promise<RoutedRequest> {
   const contentType = request.headers["content-type"] ?? "";
@@ -323,6 +367,37 @@ async function routeRequest(
   if (eligibility === "model-disabled") {
     throw new GatewayError(409, "model_not_enabled", `Inference model ${model.id} is disabled`);
   }
+  const requirements = requestRequirements(record, route);
+  if (compactionKey) {
+    try {
+      for (const key of ["input", "conversation", "context"] as const) {
+        if (key in record) record[key] = expandCompactionTree(record[key], compactionKey, config.compaction?.maxEnvelopeBytes ?? 512 * 1024);
+      }
+    } catch {
+      throw new GatewayError(400, "invalid_compaction_envelope", "Router compaction envelope integrity verification failed");
+    }
+  }
+  for (const key of ["input", "conversation", "context"] as const) {
+    if (key in record) record[key] = normalizeCollaborationTree(record[key]);
+  }
+  let namespaceMap: NamespaceMap | null = null;
+  if (Array.isArray(record.tools)) {
+    const tools = record.tools.filter(isNamespaceTool);
+    if (tools.length !== record.tools.length) throw new GatewayError(400, "invalid_tools", "Every routed tool must be a named function schema");
+    const flattened = flattenNamespaceTools(tools);
+    record.tools = flattened.tools;
+    namespaceMap = flattened.map;
+  }
+  const aging = ageToolResults(record.input, config.toolResultAging);
+  if (aging.agedResults > 0) record.input = aging.input;
+  let visionFlags: string[] = [];
+  const nativeImageRoute = config.visionBridge.engineModelIds.includes(model.id)
+    || platform?.model(model.id).capabilities.nativeImage === true;
+  if (requirements.includes("images") && !nativeImageRoute) {
+    const bridged = await visionBridge.apply(record.input);
+    record.input = bridged.input;
+    visionFlags = bridged.flags;
+  }
   record.model = (provider.protocol ?? "responses") === "responses" ? model.upstreamModel : model.id;
   delete record.client_metadata;
   const profiled = applyRequestProfile(provider.requestProfile ?? "generic-openai", record);
@@ -331,8 +406,242 @@ async function routeRequest(
     model,
     provider,
     profileHash: profiled.profileHash,
-    transformations: profiled.changes
+    transformations: [
+      ...profiled.changes,
+      ...(namespaceMap ? ["tools.namespace_flattened"] : []),
+      ...(aging.agedResults ? [`tool-results.aged:${aging.agedResults}`, `tool-results.tokens-saved:${aging.estimatedTokensSaved}`] : []),
+      ...visionFlags
+    ],
+    namespaceMap,
+    requirements,
+    route
   };
+}
+
+function requestRequirements(
+  record: Record<string, unknown>,
+  route: "responses" | "responses/compact"
+): RoutedRequest["requirements"] {
+  const required = new Set<RoutedRequest["requirements"][number]>();
+  if (route === "responses/compact") required.add("compaction");
+  if (Array.isArray(record.tools) && record.tools.length > 0) required.add("tools");
+  if (record.response_format || record.text && isRecord(record.text) && record.text.format) required.add("structured-output");
+  walkRequest(record, (value) => {
+    if (value.type === "input_image" || value.type === "image_url") required.add("images");
+    if (typeof value.type === "string" && /(?:web_)?search/i.test(value.type)) required.add("search");
+    if (typeof value.encrypted_content === "string" || value.type === "collaboration") required.add("collaboration");
+  });
+  return [...required];
+}
+
+function walkRequest(value: unknown, visit: (record: Record<string, unknown>) => void): void {
+  if (Array.isArray(value)) {
+    for (const child of value) walkRequest(child, visit);
+    return;
+  }
+  if (!isRecord(value)) return;
+  visit(value);
+  for (const child of Object.values(value)) walkRequest(child, visit);
+}
+
+function isNamespaceTool(value: unknown): value is NamespaceTool {
+  return isRecord(value)
+    && value.type === "function"
+    && typeof value.name === "string"
+    && value.name.length > 0
+    && (value.namespace === undefined || typeof value.namespace === "string")
+    && (value.parameters === undefined || isRecord(value.parameters));
+}
+
+function normalizeCollaborationTree(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeCollaborationTree);
+  if (!isRecord(value)) return value;
+  const nested = Object.fromEntries(Object.entries(value).map(([key, child]) => [key, normalizeCollaborationTree(child)]));
+  return normalizePlaintextCollaborationPayload(nested);
+}
+
+function expandCompactionTree(value: unknown, integrityKey: string, maxEnvelopeBytes: number): unknown {
+  if (Array.isArray(value)) return value.map((entry) => expandCompactionTree(entry, integrityKey, maxEnvelopeBytes));
+  if (!isRecord(value)) return value;
+  if (value.type === "codex-router.compaction") {
+    const envelope = parseCompactionEnvelope(value, integrityKey, maxEnvelopeBytes);
+    return {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "input_text", text: `[Router compaction summary; ${envelope.provenance.providerId}/${envelope.provenance.modelId}]\n${envelope.summary}` }]
+    };
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, expandCompactionTree(child, integrityKey, maxEnvelopeBytes)]));
+}
+
+function transformProviderResponse(
+  value: unknown,
+  routed: RoutedRequest,
+  config: InferenceConfig,
+  compactionKey: string | null
+): unknown {
+  let transformed = normalizeCollaborationTree(value);
+  if (routed.namespaceMap) transformed = restoreNamespaceToolCalls(transformed, routed.namespaceMap);
+  if (routed.route !== "responses/compact" || !config.compaction || !compactionKey || routed.provider.id === "native-codex") {
+    return transformed;
+  }
+  const summary = responseText(transformed);
+  if (!summary) throw new GatewayError(502, "empty_compaction", "External compaction completed without a usable summary");
+  const envelope = createCompactionEnvelope(summary, {
+    providerId: routed.provider.id,
+    modelId: routed.model.id,
+    profileHash: routed.profileHash
+  }, compactionKey, config.compaction.maxSummaryBytes);
+  const base = isRecord(transformed) ? { ...transformed } : {};
+  delete base.encrypted_content;
+  delete base.compacted_content;
+  return {
+    ...base,
+    object: "codex_router.compaction",
+    model: routed.model.id,
+    router_compaction: envelope
+  };
+}
+
+function createConfiguredVisionEngines(config: InferenceConfig, redactor: SecretRedactor): VisionEngine[] {
+  return config.visionBridge.engineModelIds.map((modelId) => {
+    const model = config.models.find((entry) => entry.id === modelId);
+    if (!model) throw new RouterError("invalid_request", `Vision engine ${modelId} is not present in the model registry`);
+    const provider = config.providers.find((entry) => entry.id === model.providerId);
+    if (!provider) throw new RouterError("invalid_request", `Vision engine ${modelId} has no provider`);
+    return {
+      id: `vision:${modelId}`,
+      source: provider.keyless ? "local" as const : "registry" as const,
+      modelId,
+      describe: async ({ image, question, signal }) => {
+        const target = upstreamTarget(config, provider, "responses");
+        const requestedModel = (provider.protocol ?? "responses") === "responses" ? model.upstreamModel : model.id;
+        const profiled = applyRequestProfile(provider.requestProfile ?? "generic-openai", {
+          model: requestedModel,
+          input: [{
+            type: "message",
+            role: "user",
+            content: [
+              { type: "input_text", text: question },
+              { type: "input_image", image_url: image }
+            ]
+          }]
+        });
+        const signals = [AbortSignal.timeout(Math.min(config.requestTimeoutMs, 120_000)), ...(signal ? [signal] : [])];
+        const response = await fetch(target.url, {
+          method: "POST",
+          headers: configuredVisionHeaders(provider, target.translationCapability, redactor),
+          body: JSON.stringify(profiled.body),
+          redirect: "manual",
+          signal: AbortSignal.any(signals)
+        });
+        if (response.status >= 300 && response.status < 400) throw new Error("Vision engine returned an unexpected redirect");
+        if (!response.ok) throw new Error(`Vision engine returned status ${response.status}`);
+        const declared = Number(response.headers.get("content-length") ?? 0);
+        if (declared > 2 * 1024 * 1024) throw new Error("Vision engine response exceeds the safe transcript bound");
+        const body = Buffer.from(await response.arrayBuffer());
+        if (body.length > 2 * 1024 * 1024) throw new Error("Vision engine response exceeds the safe transcript bound");
+        let payload: unknown;
+        try { payload = JSON.parse(body.toString("utf8")); } catch { throw new Error("Vision engine returned malformed JSON"); }
+        const transcript = responseText(payload);
+        if (!transcript) throw new Error("Vision engine returned no usable transcript");
+        return transcript;
+      }
+    };
+  });
+}
+
+function configuredVisionHeaders(
+  provider: InferenceProviderConfig,
+  translationCapability: string | null,
+  redactor: SecretRedactor
+): Headers {
+  const headers = new Headers({ Accept: "application/json", "Content-Type": "application/json", "User-Agent": "codex-router/0.2" });
+  if (translationCapability) {
+    redactor.addSecret(translationCapability);
+    headers.set("Authorization", `Bearer ${translationCapability}`);
+    headers.set("X-Codex-Router-Provider", provider.id);
+  } else if (!provider.keyless) {
+    const credential = resolveSecretReference(provider.credentialRef!);
+    redactor.addSecret(credential);
+    headers.set("Authorization", `Bearer ${credential}`);
+  }
+  return headers;
+}
+
+function responseText(value: unknown): string {
+  const fragments: string[] = [];
+  walkRequest(value, (record) => {
+    if ((record.type === "output_text" || record.type === "text") && typeof record.text === "string") fragments.push(record.text);
+    if (record.type === "message" && typeof record.content === "string") fragments.push(record.content);
+    if (typeof record.summary === "string") fragments.push(record.summary);
+  });
+  return fragments.join("\n").trim();
+}
+
+function transformSseStream(body: ReadableStream<Uint8Array>, namespaceMap: NamespaceMap | null): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let buffered = "";
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        while (true) {
+          const boundary = /\r?\n\r?\n/.exec(buffered);
+          if (boundary?.index !== undefined) {
+            const end = boundary.index + boundary[0].length;
+            const block = buffered.slice(0, boundary.index);
+            buffered = buffered.slice(end);
+            controller.enqueue(encoder.encode(`${transformSseBlock(block, namespaceMap)}${boundary[0]}`));
+            return;
+          }
+          const next = await reader.read();
+          if (next.done) {
+            buffered += decoder.decode();
+            if (buffered) controller.enqueue(encoder.encode(transformSseBlock(buffered, namespaceMap)));
+            controller.close();
+            reader.releaseLock();
+            return;
+          }
+          buffered += decoder.decode(next.value, { stream: true });
+        }
+      } catch (error) {
+        controller.error(error);
+        reader.releaseLock();
+      }
+    },
+    async cancel(reason) {
+      await reader.cancel(reason).catch(() => undefined);
+    }
+  });
+}
+
+function transformSseBlock(block: string, namespaceMap: NamespaceMap | null): string {
+  const lines = block.split(/\r?\n/);
+  const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart());
+  if (data.length === 0) return block;
+  const payload = data.join("\n");
+  if (!payload || payload === "[DONE]") return block;
+  let parsed: unknown;
+  try { parsed = JSON.parse(payload); } catch { return block; }
+  let transformed = normalizeCollaborationTree(parsed);
+  if (namespaceMap) transformed = restoreNamespaceToolCalls(transformed, namespaceMap);
+  if (JSON.stringify(transformed) === JSON.stringify(parsed)) return block;
+  const output: string[] = [];
+  let replaced = false;
+  for (const line of lines) {
+    if (!line.startsWith("data:")) output.push(line);
+    else if (!replaced) {
+      output.push(`data: ${JSON.stringify(transformed)}`);
+      replaced = true;
+    }
+  }
+  return output.join("\n");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function routeEligibility(

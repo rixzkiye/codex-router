@@ -22,6 +22,19 @@ const platformMutationSchema = z.object({
   idempotencyKey: z.string().min(8).max(200),
   expectedVersion: z.number().int().positive()
 });
+const consentMutationSchema = platformMutationSchema.extend({ consent: z.literal(true) });
+const installationTargetSchema = z.object({
+  root: z.string().min(1).max(4_096),
+  version: z.string().min(1).max(200),
+  releaseSource: z.string().min(1).max(4_096),
+  entrypoint: z.string().min(1).max(1_024),
+  configPath: z.string().min(1).max(4_096),
+  host: z.enum(["linux", "darwin", "win32"]).optional()
+});
+const installationPlanSchema = platformMutationSchema.extend({ target: installationTargetSchema });
+const installationApplySchema = consentMutationSchema.extend({ target: installationTargetSchema });
+const installationExistingSchema = consentMutationSchema.extend({ manifestFile: z.string().min(1).max(4_096) });
+const installationUninstallSchema = installationExistingSchema.extend({ removeRetainedReleases: z.boolean().optional() });
 const SESSION_COOKIE = "codex_router_session";
 const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   "Content-Security-Policy":
@@ -297,6 +310,18 @@ async function handleApi(
       sendJson(response, 202, application.validateProvider(callerScope, providerId, platformMutationSchema.parse(await readJson(request))));
       return;
     }
+    if (method === "GET" && child === "login") {
+      sendJson(response, 200, application.providerLoginLaunch(providerId));
+      return;
+    }
+    if (method === "POST" && child === "login") {
+      sendJson(response, 202, application.loginProvider(callerScope, providerId, platformMutationSchema.parse(await readJson(request))));
+      return;
+    }
+    if (method === "POST" && child === "logout") {
+      sendJson(response, 202, application.logoutProvider(callerScope, providerId, platformMutationSchema.parse(await readJson(request))));
+      return;
+    }
     if (method === "POST" && child === "discover") {
       sendJson(response, 202, application.refreshProviderCatalog(callerScope, providerId, platformMutationSchema.parse(await readJson(request))));
       return;
@@ -312,6 +337,14 @@ async function handleApi(
   }
   if (method === "GET" && pathName === "/api/v1/accounts") {
     sendJson(response, 200, { accounts: application.accounts() });
+    return;
+  }
+  const accountMatch = pathName.match(/^\/api\/v1\/accounts\/([^/]+)$/);
+  if (method === "GET" && accountMatch) {
+    const accountId = decodeURIComponent(accountMatch[1]!);
+    const account = application.accounts().find((entry) => entry.id === accountId);
+    if (!account) throw new RouterError("not_found", `Account ${accountId} was not found`);
+    sendJson(response, 200, account);
     return;
   }
   const runtimeMatch = pathName.match(/^\/api\/v1\/runtimes\/([^/]+)(?:\/(.*))?$/);
@@ -370,14 +403,95 @@ async function handleApi(
     sendJson(response, 200, application.usage());
     return;
   }
+  if (method === "GET" && pathName === "/api/v1/routing/decisions") {
+    sendJson(response, 200, { decisions: application.routingDecisions(parseInteger(url.searchParams.get("limit"), 100)) });
+    return;
+  }
+  if (method === "GET" && pathName === "/api/v1/local-models") {
+    sendJson(response, 200, { runtime: application.localRuntime(), models: application.localModels() });
+    return;
+  }
+  if (method === "POST" && pathName === "/api/v1/local-models/discover") {
+    sendJson(response, 202, application.discoverLocalModels(callerScope, platformMutationSchema.parse(await readJson(request))));
+    return;
+  }
+  const localModelMatch = pathName.match(/^\/api\/v1\/local-models\/([^/]+)\/(download|benchmark|select|unselect|remove)$/);
+  if (method === "POST" && localModelMatch) {
+    const modelId = decodeURIComponent(localModelMatch[1]!);
+    const action = localModelMatch[2]!;
+    const body = await readJson(request);
+    if (action === "download") {
+      sendJson(response, 202, application.downloadLocalModel(callerScope, modelId, consentMutationSchema.parse(body)));
+      return;
+    }
+    if (action === "benchmark") {
+      sendJson(response, 202, application.benchmarkLocalModel(callerScope, modelId, platformMutationSchema.parse(body)));
+      return;
+    }
+    if (action === "select" || action === "unselect") {
+      sendJson(response, 202, application.setLocalModelSelected(callerScope, modelId, action === "select", platformMutationSchema.parse(body)));
+      return;
+    }
+    sendJson(response, 202, application.removeLocalModel(callerScope, modelId, consentMutationSchema.parse(body)));
+    return;
+  }
+  if (method === "GET" && pathName === "/api/v1/catalogs/native") {
+    sendJson(response, 200, { catalogs: application.nativeCatalogs() });
+    return;
+  }
+  if (method === "GET" && pathName === "/api/v1/evidence") {
+    sendJson(response, 200, { evidence: application.platformEvidence() });
+    return;
+  }
+  if (method === "GET" && pathName === "/api/v1/installation") {
+    sendJson(response, 200, { installation: application.installState() });
+    return;
+  }
+  if (method === "POST" && pathName === "/api/v1/installation/plan") {
+    const { target: targetInput, ...input } = installationPlanSchema.parse(await readJson(request));
+    const { host, ...target } = targetInput;
+    sendJson(response, 202, application.planInstallation(callerScope, { ...target, ...(host ? { host } : {}) }, input));
+    return;
+  }
+  if (method === "POST" && pathName === "/api/v1/installation/apply") {
+    const { target: targetInput, ...input } = installationApplySchema.parse(await readJson(request));
+    const { host, ...target } = targetInput;
+    sendJson(response, 202, application.applyInstallation(callerScope, { ...target, ...(host ? { host } : {}) }, input));
+    return;
+  }
+  if (method === "POST" && pathName === "/api/v1/installation/rollback") {
+    const { manifestFile, ...input } = installationExistingSchema.parse(await readJson(request));
+    sendJson(response, 202, application.rollbackInstallation(callerScope, manifestFile, input));
+    return;
+  }
+  if (method === "POST" && pathName === "/api/v1/installation/disable") {
+    const { manifestFile, ...input } = installationExistingSchema.parse(await readJson(request));
+    sendJson(response, 202, application.disableInstallation(callerScope, manifestFile, input));
+    return;
+  }
+  if (method === "POST" && pathName === "/api/v1/installation/uninstall") {
+    const { manifestFile, removeRetainedReleases, ...input } = installationUninstallSchema.parse(await readJson(request));
+    sendJson(response, 202, application.uninstallInstallation(callerScope, manifestFile, {
+      ...input,
+      ...(removeRetainedReleases === undefined ? {} : { removeRetainedReleases })
+    }));
+    return;
+  }
   if (method === "GET" && pathName === "/api/v1/operations") {
     sendJson(response, 200, { operations: application.operations(parseInteger(url.searchParams.get("limit"), 100)) });
     return;
   }
-  const operationMatch = pathName.match(/^\/api\/v1\/operations\/([^/]+)$/);
-  if (method === "GET" && operationMatch) {
-    sendJson(response, 200, application.operation(decodeURIComponent(operationMatch[1]!)));
-    return;
+  const operationMatch = pathName.match(/^\/api\/v1\/operations\/([^/]+)(?:\/(cancel))?$/);
+  if (operationMatch) {
+    const operationId = decodeURIComponent(operationMatch[1]!);
+    if (method === "GET" && !operationMatch[2]) {
+      sendJson(response, 200, application.operation(operationId));
+      return;
+    }
+    if (method === "POST" && operationMatch[2] === "cancel") {
+      sendJson(response, 202, application.cancelPlatformOperation(callerScope, operationId));
+      return;
+    }
   }
   if (method === "GET" && pathName === "/api/v1/worktrees") {
     sendJson(response, 200, { worktrees: application.worktrees() });
