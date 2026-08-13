@@ -6,7 +6,7 @@ export default defineConfig({
   root: path.resolve(import.meta.dirname, "web"),
   plugins: [react()],
   build: {
-    outDir: path.resolve(import.meta.dirname, "dist/web"),
+    outDir: path.resolve(import.meta.dirname, "dist/console"),
     emptyOutDir: true,
     assetsDir: "assets",
     sourcemap: true,

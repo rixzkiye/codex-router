@@ -4,6 +4,7 @@ import path from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { RouterApplicationService } from "./application.js";
 import { loadConfig } from "./config.js";
+import { startInferenceGateway } from "./inference/server.js";
 import { createMcpServer } from "./mcp.js";
 import { CodexRouter } from "./router.js";
 import { createJsonLogger, SecretRedactor } from "./security.js";
@@ -15,6 +16,28 @@ async function main(): Promise<void> {
   const redactor = new SecretRedactor();
   const logger = createJsonLogger(redactor);
   const config = await loadConfig(configPath);
+  if (args[0] === "inference") {
+    if (!config.inference) {
+      throw new Error("Inference gateway configuration is missing");
+    }
+    const host = option(args, "--host");
+    const port = numericOption(args, "--port");
+    const gateway = await startInferenceGateway(config.inference, redactor, logger, {
+      ...(host ? { host } : {}),
+      ...(port === undefined ? {} : { port })
+    });
+    let closing = false;
+    const shutdown = async () => {
+      if (closing) return;
+      closing = true;
+      await gateway.close();
+    };
+    process.once("SIGINT", () => void shutdown().finally(() => process.exit(0)));
+    process.once("SIGTERM", () => void shutdown().finally(() => process.exit(0)));
+    process.stdout.write(`Codex Router Inference: ${gateway.url}/v1\n`);
+    logger.info({ config_path: configPath, url: gateway.url }, "Codex Router inference gateway started");
+    return;
+  }
   const router = await CodexRouter.create(config, { logger, redactor });
   const application = new RouterApplicationService(router, redactor);
   const webMode = args[0] === "web";
@@ -23,7 +46,7 @@ async function main(): Promise<void> {
     ? await startWebGateway(application, redactor, logger, {
         host: option(args, "--host") ?? "127.0.0.1",
         port: numericOption(args, "--port") ?? 4178,
-        assetRoot: option(args, "--assets") ?? path.join(import.meta.dirname, "web")
+        assetRoot: option(args, "--assets") ?? path.join(import.meta.dirname, "console")
       })
     : null;
   const shutdown = async () => {

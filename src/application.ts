@@ -313,6 +313,16 @@ function safeConfig(config: RouterConfig) {
       cors: "disabled",
       session: "one-time bootstrap token with HttpOnly SameSite=Strict cookie"
     },
+    inference: config.inference
+      ? {
+          enabled: true,
+          host: config.inference.host,
+          port: config.inference.port,
+          protocol: "openai_responses",
+          providers: config.inference.providers.map((provider) => ({ id: provider.id, keyless: provider.keyless })),
+          models: config.inference.models.map((model) => ({ id: model.id, providerId: model.providerId }))
+        }
+      : { enabled: false },
     runtimes: config.runtimes.map((runtime) => ({
       id: runtime.id,
       adapter: runtime.adapter,

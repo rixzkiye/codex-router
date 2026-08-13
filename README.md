@@ -23,6 +23,7 @@ The core invariant is: logical agent identity is durable, execution context is r
 - Capability-, affinity-, quota-, health-, load-, project-, provider-, and model-aware scheduling with recorded reasons.
 - Codex App Server JSONL supervision with `initialize`, thread start/read/resume, turn start/steer/interrupt, lifecycle normalization, approvals, sparse quota updates, and restart reconciliation.
 - A normalized external-provider JSONL bridge contract for configured OpenAI, DeepSeek, or other API worker processes.
+- A loopback-only OpenAI Responses inference gateway with exact model-to-provider routing, credential isolation, bounded request bodies, streaming backpressure, and no automatic replay or failover.
 - Clean/unclean checkpoints, explicit cross-runtime hydration, policy-gated quota handoff, and no blind prompt replay.
 - Versioned compact results that separate worker-reported claims from observed worktree and command evidence.
 - Early recursive credential redaction and authority checks on pending approval responses.
@@ -75,7 +76,7 @@ pnpm build
 node dist/index.js web --open --config ./codex-router.config.json
 ```
 
-The built-in gateway binds to `127.0.0.1:4178` by default. `--open` places a short-lived one-time token in the URL fragment; the browser removes the fragment immediately and exchanges it for an HttpOnly, SameSite=Strict session cookie. Use `--port 0` for an ephemeral port or `--assets /absolute/path/to/dist/web` to override the static bundle location.
+The built-in gateway binds to `127.0.0.1:4178` by default. `--open` places a short-lived one-time token in the URL fragment; the browser removes the fragment immediately and exchanges it for an HttpOnly, SameSite=Strict session cookie. Use `--port 0` for an ephemeral port or `--assets /absolute/path/to/dist/console` to override the static bundle location.
 
 The built-in gateway intentionally refuses non-loopback binding. Remote access requires an explicitly configured authenticated TLS reverse proxy or a production gateway with trusted identity and role mapping. Do not forward the local bootstrap URL or expose it through a public tunnel.
 
@@ -134,6 +135,22 @@ Start and continue return `{ "threadId", "turnId", "acceptedAt" }`. The bridge s
 ```
 
 The bridge, not the router, owns provider-specific model calls and tool execution. It must enforce the supplied worktree mode, authority envelope, and fencing token.
+
+## Model inference gateway
+
+The optional inference gateway is a separate data plane for Codex-compatible Responses API traffic. It does not own agent lifecycle, tools, worktrees, continuations, or handoffs. V1 deliberately supports only upstreams that implement the OpenAI Responses contract; provider-native Chat Completions or Messages translation still belongs in a tested external bridge.
+
+Configure `inference` with an `env:` caller token reference, provider endpoints, provider credential references, and exact public-to-upstream model mappings. Then run:
+
+```bash
+export CODEX_ROUTER_INFERENCE_TOKEN="$(openssl rand -hex 32)"
+export CODEX_ROUTER_EXAMPLE_PROVIDER_KEY="provider credential"
+node dist/index.js inference --config ./codex-router.config.json
+```
+
+The command prints a loopback base URL such as `http://127.0.0.1:4202/v1`. Clients authenticate to it with the caller token. The gateway authenticates before reading model traffic, strips caller and Codex identity headers, removes `client_metadata`, rewrites only the configured model ID, and injects only the selected provider credential. `GET /health` is credential-free and contains counts only; `GET /v1/models`, `POST /v1/responses`, and `POST /v1/responses/compact` require caller authentication.
+
+Each request has exactly one selected provider. The gateway never retries or fails over a request, including after a stream has begun. This preserves the router's no-replay boundary and keeps continuation/provider affinity an explicit control-plane decision.
 
 ## Lifecycle and recovery semantics
 

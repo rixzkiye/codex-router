@@ -8,6 +8,112 @@ const secretReferenceSchema = z.string().regex(/^env:[A-Z][A-Z0-9_]*$/, {
   message: "Secret references must use env:VARIABLE_NAME"
 });
 
+const providerIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/, {
+  message: "Provider IDs must contain lowercase letters, numbers, and hyphens"
+});
+
+export const inferenceProviderConfigSchema = z
+  .object({
+    id: providerIdSchema,
+    baseUrl: z.url(),
+    credentialRef: secretReferenceSchema.optional(),
+    keyless: z.boolean().default(false)
+  })
+  .superRefine((provider, context) => {
+    const url = new URL(provider.baseUrl);
+    const loopback = ["127.0.0.1", "::1", "localhost"].includes(url.hostname);
+    if (url.username || url.password) {
+      context.addIssue({
+        code: "custom",
+        path: ["baseUrl"],
+        message: "Inference provider URLs cannot contain credentials"
+      });
+    }
+    if (url.search || url.hash) {
+      context.addIssue({
+        code: "custom",
+        path: ["baseUrl"],
+        message: "Inference provider URLs cannot contain query strings or fragments"
+      });
+    }
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+      context.addIssue({
+        code: "custom",
+        path: ["baseUrl"],
+        message: "Inference providers must use HTTPS unless they are loopback-local"
+      });
+    }
+    if (provider.keyless && !loopback) {
+      context.addIssue({
+        code: "custom",
+        path: ["keyless"],
+        message: "Keyless inference providers must be loopback-local"
+      });
+    }
+    if (provider.keyless && provider.credentialRef) {
+      context.addIssue({
+        code: "custom",
+        path: ["credentialRef"],
+        message: "Keyless inference providers cannot declare a credential reference"
+      });
+    }
+    if (!provider.keyless && !provider.credentialRef) {
+      context.addIssue({
+        code: "custom",
+        path: ["credentialRef"],
+        message: "Authenticated inference providers require a credential reference"
+      });
+    }
+  });
+
+export const inferenceModelConfigSchema = z.object({
+  id: z.string().min(1),
+  providerId: providerIdSchema,
+  upstreamModel: z.string().min(1)
+});
+
+export const inferenceConfigSchema = z
+  .object({
+    callerTokenRef: secretReferenceSchema,
+    host: z.enum(["127.0.0.1", "::1", "localhost"]).default("127.0.0.1"),
+    port: z.number().int().min(0).max(65_535).default(4202),
+    maxBodyBytes: z.number().int().positive().max(64 * 1024 * 1024).default(8 * 1024 * 1024),
+    requestTimeoutMs: z.number().int().positive().max(60 * 60 * 1000).default(15 * 60 * 1000),
+    providers: z.array(inferenceProviderConfigSchema).min(1),
+    models: z.array(inferenceModelConfigSchema).min(1)
+  })
+  .superRefine((inference, context) => {
+    const providerIds = new Set<string>();
+    for (const [index, provider] of inference.providers.entries()) {
+      if (providerIds.has(provider.id)) {
+        context.addIssue({
+          code: "custom",
+          path: ["providers", index, "id"],
+          message: `Duplicate inference provider ID: ${provider.id}`
+        });
+      }
+      providerIds.add(provider.id);
+    }
+    const modelIds = new Set<string>();
+    for (const [index, model] of inference.models.entries()) {
+      if (modelIds.has(model.id)) {
+        context.addIssue({
+          code: "custom",
+          path: ["models", index, "id"],
+          message: `Duplicate inference model ID: ${model.id}`
+        });
+      }
+      modelIds.add(model.id);
+      if (!providerIds.has(model.providerId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["models", index, "providerId"],
+          message: `Unknown inference provider: ${model.providerId}`
+        });
+      }
+    }
+  });
+
 const runtimeBase = z.object({
   id: z.string().min(1),
   provider: z.string().min(1),
@@ -48,12 +154,16 @@ export const routerConfigSchema = z.object({
   maxWaitMs: z.number().int().positive().max(300_000).default(30_000),
   leaseTtlMs: z.number().int().positive().default(120_000),
   idempotencyTtlMs: z.number().int().positive().default(7 * 24 * 60 * 60 * 1000),
+  inference: inferenceConfigSchema.optional(),
   runtimes: z.array(z.discriminatedUnion("adapter", [codexRuntimeConfigSchema, externalRuntimeConfigSchema]))
 });
 
 export type CodexRuntimeConfig = z.infer<typeof codexRuntimeConfigSchema>;
 export type ExternalRuntimeConfig = z.infer<typeof externalRuntimeConfigSchema>;
 export type RuntimeConfig = CodexRuntimeConfig | ExternalRuntimeConfig;
+export type InferenceProviderConfig = z.infer<typeof inferenceProviderConfigSchema>;
+export type InferenceModelConfig = z.infer<typeof inferenceModelConfigSchema>;
+export type InferenceConfig = z.infer<typeof inferenceConfigSchema>;
 export type RouterConfig = z.infer<typeof routerConfigSchema>;
 
 export async function loadConfig(configPath: string): Promise<RouterConfig> {

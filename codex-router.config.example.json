@@ -4,6 +4,27 @@
   "maxWaitMs": 30000,
   "leaseTtlMs": 120000,
   "idempotencyTtlMs": 604800000,
+  "inference": {
+    "callerTokenRef": "env:CODEX_ROUTER_INFERENCE_TOKEN",
+    "host": "127.0.0.1",
+    "port": 4202,
+    "maxBodyBytes": 8388608,
+    "requestTimeoutMs": 900000,
+    "providers": [
+      {
+        "id": "example-provider",
+        "baseUrl": "https://api.example.invalid/v1",
+        "credentialRef": "env:CODEX_ROUTER_EXAMPLE_PROVIDER_KEY"
+      }
+    ],
+    "models": [
+      {
+        "id": "example-provider/model",
+        "providerId": "example-provider",
+        "upstreamModel": "model"
+      }
+    ]
+  },
   "runtimes": [
     {
       "id": "sol-main",
