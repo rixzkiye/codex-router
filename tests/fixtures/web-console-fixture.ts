@@ -83,7 +83,7 @@ router.registry.updateRuntimeHealth("terra-review", {
 const gateway = await startWebGateway(app, redactor, logger, {
   host: "127.0.0.1",
   port: Number(process.env.CODEX_ROUTER_FIXTURE_PORT ?? 4178),
-  assetRoot: path.resolve("dist/web"),
+  assetRoot: path.resolve("dist/console"),
   bootstrapToken: "fixture-console"
 });
 process.stdout.write(`${gateway.bootstrapUrl}\n`);
