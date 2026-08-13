@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -16,6 +16,7 @@ import {
 import { asRouterError, RouterError } from "../errors.js";
 import type { RouterApplicationService } from "../application.js";
 import { newId, type Logger, type SecretRedactor } from "../security.js";
+import type { ManagedSetup } from "../platform/setup.js";
 
 const MAX_BODY_BYTES = 256 * 1024;
 const platformMutationSchema = z.object({
@@ -35,6 +36,7 @@ const installationPlanSchema = platformMutationSchema.extend({ target: installat
 const installationApplySchema = consentMutationSchema.extend({ target: installationTargetSchema });
 const installationExistingSchema = consentMutationSchema.extend({ manifestFile: z.string().min(1).max(4_096) });
 const installationUninstallSchema = installationExistingSchema.extend({ removeRetainedReleases: z.boolean().optional() });
+const backgroundPreferenceSchema = z.object({ enabled: z.boolean(), startAtLogin: z.boolean() });
 const SESSION_COOKIE = "codex_router_session";
 const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   "Content-Security-Policy":
@@ -52,6 +54,8 @@ export interface WebGatewayOptions {
   bootstrapToken?: string;
   sessionIdleMs?: number;
   sessionAbsoluteMs?: number;
+  controlToken?: string;
+  management?: ManagedSetup;
 }
 
 export interface WebGateway {
@@ -89,7 +93,7 @@ export async function startWebGateway(
   }
 
   const oneTimeToken = options.bootstrapToken ?? randomBytes(32).toString("base64url");
-  let bootstrapAvailable = true;
+  const bootstrapTokens = new Map([[oneTimeToken, Date.now() + 5 * 60_000]]);
   const sessions = new Map<string, WebSession>();
   const idleMs = options.sessionIdleMs ?? 60 * 60 * 1000;
   const absoluteMs = options.sessionAbsoluteMs ?? 12 * 60 * 60 * 1000;
@@ -116,13 +120,27 @@ export async function startWebGateway(
     const url = new URL(request.url ?? "/", origin || "http://127.0.0.1");
     if (url.pathname.startsWith("/api/")) response.setHeader("Cache-Control", "no-store");
 
+    if (request.method === "POST" && url.pathname === "/api/v1/bootstrap-ticket") {
+      if (!options.controlToken || !safeToken(request.headers.authorization, options.controlToken)) {
+        throw new RouterError("unauthorized", "Local Console control token is missing or invalid");
+      }
+      const token = randomBytes(32).toString("base64url");
+      for (const [candidate, expiresAt] of bootstrapTokens) {
+        if (expiresAt <= Date.now() || bootstrapTokens.size >= 16) bootstrapTokens.delete(candidate);
+      }
+      bootstrapTokens.set(token, Date.now() + 60_000);
+      sendJson(response, 200, { bootstrapUrl: `${origin}/#bootstrap=${token}` });
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/v1/session") {
       assertOrigin(request, origin);
       const body = await readJson(request);
-      if (!bootstrapAvailable || body.bootstrapToken !== oneTimeToken) {
+      const expiresAt = typeof body.bootstrapToken === "string" ? bootstrapTokens.get(body.bootstrapToken) : undefined;
+      if (typeof body.bootstrapToken !== "string" || expiresAt === undefined || expiresAt <= Date.now()) {
         throw new RouterError("unauthorized", "Bootstrap token is invalid or has already been used");
       }
-      bootstrapAvailable = false;
+      bootstrapTokens.delete(body.bootstrapToken);
       const now = Date.now();
       const session: WebSession = {
         id: randomBytes(32).toString("base64url"),
@@ -157,7 +175,7 @@ export async function startWebGateway(
         sendJson(response, 200, { signedOut: true });
         return;
       }
-      await handleApi(application, request, response, url, session);
+      await handleApi(application, request, response, url, session, logger, options.management);
       return;
     }
 
@@ -189,7 +207,9 @@ async function handleApi(
   request: IncomingMessage,
   response: ServerResponse,
   url: URL,
-  session: WebSession
+  session: WebSession,
+  logger: Logger,
+  management?: ManagedSetup
 ): Promise<void> {
   const method = request.method ?? "GET";
   const pathName = url.pathname;
@@ -197,6 +217,37 @@ async function handleApi(
 
   if (method === "GET" && pathName === "/api/v1/bootstrap") {
     sendJson(response, 200, { ...application.bootstrap(session.role), csrfToken: session.csrfToken });
+    return;
+  }
+  if (method === "GET" && pathName === "/api/v1/management") {
+    if (!management) throw new RouterError("unsupported", "This Console was not started by a managed Codex Router installation.");
+    sendJson(response, 200, await management.status());
+    return;
+  }
+  if (method === "POST" && pathName === "/api/v1/management/background") {
+    if (!management) throw new RouterError("unsupported", "This Console was not started by a managed Codex Router installation.");
+    const preference = backgroundPreferenceSchema.parse(await readJson(request));
+    if (!preference.enabled) {
+      sendJson(response, 202, { accepted: true, consequence: "The Console will stop after this response and will not start at login." });
+      deferManagement(logger, "disable background mode", () => management.setBackground(false, false));
+      return;
+    }
+    sendJson(response, 200, await management.setBackground(true, preference.startAtLogin));
+    return;
+  }
+  if (method === "POST" && pathName === "/api/v1/management/start") {
+    if (!management) throw new RouterError("unsupported", "This Console was not started by a managed Codex Router installation.");
+    sendJson(response, 200, await management.setBackground(true, false));
+    return;
+  }
+  if (method === "POST" && (pathName === "/api/v1/management/stop" || pathName === "/api/v1/management/restart")) {
+    if (!management) throw new RouterError("unsupported", "This Console was not started by a managed Codex Router installation.");
+    const action = pathName.endsWith("/restart") ? "restart" : "stop";
+    sendJson(response, 202, {
+      accepted: true,
+      consequence: action === "restart" ? "The Console will disconnect briefly while the service restarts." : "The Console will disconnect and remain stopped."
+    });
+    deferManagement(logger, action, () => action === "restart" ? management.restart() : management.stop());
     return;
   }
   if (method === "GET" && pathName === "/api/v1/stream") {
@@ -526,6 +577,23 @@ async function handleApi(
     );
   }
   throw new RouterError("not_found", "API route not found");
+}
+
+function safeToken(authorization: string | undefined, expected: string): boolean {
+  if (!authorization?.startsWith("Bearer ")) return false;
+  const actual = authorization.slice("Bearer ".length);
+  const left = Buffer.from(actual);
+  const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function deferManagement(logger: Logger, action: string, run: () => Promise<unknown>): void {
+  setTimeout(() => {
+    void run().catch((error) => logger.error(
+      { action, error: error instanceof Error ? error.message : String(error) },
+      "Deferred managed service action failed"
+    ));
+  }, 50);
 }
 
 async function streamSnapshots(

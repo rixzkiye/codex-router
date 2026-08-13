@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { RouterApplicationService } from "../src/application.js";
 import { CodexRouter } from "../src/router.js";
 import { startWebGateway, type WebGateway } from "../src/web/server.js";
+import type { ManagedSetup } from "../src/platform/setup.js";
 import { createGitWorktree, dependencies, MockRuntimeAdapter, testConfig } from "./helpers.js";
 
 const closers: Array<() => Promise<void>> = [];
@@ -14,6 +15,63 @@ afterEach(async () => {
 });
 
 describe("Web Console gateway", () => {
+  it("issues bounded local bootstrap tickets and exposes explicit service controls", async () => {
+    const { root } = await createGitWorktree();
+    const runtime = new MockRuntimeAdapter("runtime-a");
+    const deps = dependencies([runtime]);
+    const router = await CodexRouter.create(testConfig(root), deps);
+    const assets = await mkdtemp(path.join(tmpdir(), "codex-router-web-management-"));
+    await writeFile(path.join(assets, "index.html"), "<!doctype html><title>fixture console</title>", "utf8");
+    const managementStatus = {
+      configured: true,
+      background: true,
+      startAtLogin: true,
+      service: { state: "running", installed: true, running: true, startAtLogin: true, message: "running" },
+      mcp: { state: "owned", message: "owned" },
+      url: "http://127.0.0.1:4178",
+      paths: { configRoot: "/config", configFile: "/config/config.json", stateRoot: "/state", databaseFile: "/state/router.sqlite", manifestFile: "/state/setup.json", mcpManifestFile: "/state/mcp.json", controlTokenFile: "/state/token", serviceFile: "/service/router", logFile: "/state/router.log" }
+    } as const;
+    let restarted = false;
+    const management = {
+      status: async () => managementStatus,
+      setBackground: async () => managementStatus,
+      restart: async () => { restarted = true; },
+      stop: async () => undefined
+    } as unknown as ManagedSetup;
+    const gateway = await startWebGateway(new RouterApplicationService(router, deps.redactor), deps.redactor, deps.logger, {
+      assetRoot: assets,
+      bootstrapToken: "initial-unused-token",
+      controlToken: "local-control-token",
+      management,
+      port: 0
+    });
+    closers.push(async () => { await gateway.close(); await router.close(); });
+
+    const refused = await fetch(`${gateway.url}/api/v1/bootstrap-ticket`, { method: "POST" });
+    expect(refused.status).toBe(403);
+    const issued = await fetch(`${gateway.url}/api/v1/bootstrap-ticket`, { method: "POST", headers: { Authorization: "Bearer local-control-token" } });
+    expect(issued.status).toBe(200);
+    const bootstrapUrl = (await issued.json() as { bootstrapUrl: string }).bootstrapUrl;
+    const ticket = new URL(bootstrapUrl).hash.replace("#bootstrap=", "");
+    const sessionResponse = await fetch(`${gateway.url}/api/v1/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: gateway.url },
+      body: JSON.stringify({ bootstrapToken: ticket })
+    });
+    const cookie = sessionResponse.headers.get("set-cookie")!.split(";", 1)[0]!;
+    const session = await sessionResponse.json() as { csrfToken: string };
+    const readback = await fetch(`${gateway.url}/api/v1/management`, { headers: { Cookie: cookie } });
+    expect(await readback.json()).toMatchObject({ service: { state: "running" }, mcp: { state: "owned" } });
+    const restart = await fetch(`${gateway.url}/api/v1/management/restart`, {
+      method: "POST",
+      headers: { Cookie: cookie, Origin: gateway.url, "X-CSRF-Token": session.csrfToken, "Content-Type": "application/json" },
+      body: "{}"
+    });
+    expect(restart.status).toBe(202);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(restarted).toBe(true);
+  });
+
   it("exchanges one local bootstrap token, enforces Origin and CSRF, and delegates lifecycle start", async () => {
     const harness = await createHarness();
     const unauthenticated = await fetch(`${harness.gateway.url}/api/v1/bootstrap`);

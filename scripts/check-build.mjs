@@ -1,3 +1,4 @@
+import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import path from "node:path";
 
@@ -15,3 +16,5 @@ for (const artifact of requiredArtifacts) {
     throw new Error(`Required build artifact is missing: ${artifact}`);
   }
 }
+
+if (process.platform !== "win32") await access(path.resolve("dist/index.js"), constants.X_OK);
