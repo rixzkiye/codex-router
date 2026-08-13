@@ -115,7 +115,7 @@ describe("managed installer experience", () => {
     const unit = path.join(root, "codex-router.service");
     const content = renderUserService(paths, {
       host: "linux",
-      nodeExecutable: "/usr/bin/node",
+      nodeExecutable: process.execPath,
       entryScript: "/package/dist/index.js",
       configPath: paths.configFile,
       controlTokenFile: paths.controlTokenFile,
